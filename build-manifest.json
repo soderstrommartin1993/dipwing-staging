@@ -1,0 +1,33 @@
+{
+ "version": "0.7.0-alpha.1-staging",
+ "commit": "2a71aa9",
+ "builtAt": "2026-11-10T16:53:20.047Z",
+ "channel": "staging",
+ "testHooks": false,
+ "files": {
+  ".nojekyll": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "assets/fonts/OFL-Baloo2.txt": "273d4bb4d30d7f7011adfa11ee858b1d70a6b1f94cae89e6fa261ed8f1b8839a",
+  "assets/fonts/OFL-Nunito.txt": "40991bfa02ac620aae16dc527f3c47765a25e43f270d4c301ee6ab663a8d9015",
+  "assets/fonts/README.txt": "8704ab5b1a922fa8189e502f5bb08757c9ddf76668896ddf312d35e429d3a55b",
+  "assets/fonts/baloo-2-latin-800-normal.woff2": "3e36c57e37bda5b5f28cf10636d6d3aed4de5250df923f1b203b64ad857c79a7",
+  "assets/fonts/nunito-latin-wght-normal.woff2": "ba344451eab25b217a165363b1982048a5e5830a0daf36577973955a04cac793",
+  "index.html": "fe3dbfe2a96c8136231e45cc64324d453fd601b3e73579b61e2a827b9ada7c5f",
+  "manifest.webmanifest": "6aafd82cc3d4d0eb0db6fd6dd8920678250fe752fed168e5387f725772d6d194",
+  "robots.txt": "331ea9090db0c9f6f597bd9840fd5b171830f6e0b3ba1cb24dfa91f0c95aedc1",
+  "src/analytics.js": "64995e272e78fc1816fb1b1bba446f7e2ee4d0a989fa78bf5a1c387aed5f15de",
+  "src/economy.js": "b6a1616ddda5d5c3d7c9e4eca5d31aedd92ef35a3810a753aa5560c9c5d3bb25",
+  "src/game.js": "f16b4e20b286c3cf88b3383c7651222502c5658611970dea8ddbd9170ff158d7",
+  "src/i18n.js": "781bd1cf2dde5d8826c740d220e7a288f380cda4106564a4077b12e3a0509c2a",
+  "src/identity.js": "d0b0680a615575bbe54df5ad55d9c346340d2d20a6b47dd111933b45e46871dc",
+  "src/obstacles.js": "a0f091e8db5311bf8e0c08a5fb4349c25e2bc42255ef86bc719117b7bcca046b",
+  "src/rng.js": "28834368406f9e679cba21f20658df3c68e3565291b7040da6516f75ef76705e",
+  "src/save-transfer.js": "b46dfc9f3c4d6737baa569fa47e8e3883770dcdf72f60e613a63d877a29963f4",
+  "src/save.js": "ea29b7ec89dbc1c8f059e9481a4863b9b0622a5d638d96d2eac5f33a8be32649",
+  "src/staging.js": "b1370f51c664b28f96eb8de19c0762c2db52c98dfcffe670af5b01d2cb11391c",
+  "src/storage.js": "f58383ced5f18f20434615f723ebbcb7a94475e07265fa062cff4afcec151ba1",
+  "src/version.js": "9af69bed30aa419f54117274e988e019042d73a14cedfa6b8cf7fc13502c6d83",
+  "src/worlds.js": "e51a317b59bed56e28bb3261a2d36b59ffd465c59a48499e317a1dcf30ed578b",
+  "staging/icon-192.png": "f3a1f6c6dee5a489cd1f2ef157b3a529676db11a2f302336e0eaaa72e1c85c85",
+  "staging/icon-512.png": "d644b390fe82809865390cbbc349634d221b2cb86cea6360ed027cc574358b4f"
+ }
+}

@@ -1,0 +1,25 @@
+{
+ "name": "Dipwing (STAGING 0.7.0-alpha.1-staging)",
+ "short_name": "Dipwing β",
+ "id": "./",
+ "start_url": "./",
+ "scope": "./",
+ "display": "standalone",
+ "orientation": "portrait",
+ "background_color": "#0a0e20",
+ "theme_color": "#141b33",
+ "description": "Test version (staging). No payments, no ads.",
+ "icons": [
+  {
+   "src": "staging/icon-192.png",
+   "sizes": "192x192",
+   "type": "image/png"
+  },
+  {
+   "src": "staging/icon-512.png",
+   "sizes": "512x512",
+   "type": "image/png",
+   "purpose": "any maskable"
+  }
+ ]
+}

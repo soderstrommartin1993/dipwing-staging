@@ -55,7 +55,48 @@ function spacingSeconds(level) {
   if (level <= 20) return 2.15 - 0.055 * (level - 2);
   return Math.max(1.0, 1.16 - 0.008 * (level - 20));
 }
-function levelConfig(level) {
+/* Round 3 idea 4 – LATE_CURVE (L21–40 rhythm), flag default ON: ?late=0 or localStorage pfb_late_curve="0"
+   restores the v0.7 curve exactly (same numbers ⇒ same RNG calls ⇒ same fingerprint). Never touches L1–20,
+   endless or the daily course. No tighter gaps, no faster speed – only rhythm:
+   - breath levels L21 (entry to magic), L25, L30, L35: +0.14 s between gates, gap +12 px, twin chance 0.05,
+     timing families ×0.6, drifting-pipe amplitude ×0.7
+   - build levels: spacing stops tightening after L28; twin chance capped at 0.15
+   - every 6th gate (after the 6th) is a "breath gate": classic, gap +18 px, never a twin
+   cfg.pulse stays unused (activating it needs its own warning cue – audio package not approved). */
+function flagOn(q, lsKey) {
+  try { const v = new URLSearchParams(location.search).get(q); if (v === "0") return false; if (v === "1") return true;
+    return !(window.SafeStorage && SafeStorage.get(lsKey) === "0"); } catch (e) { return true; }
+}
+const LATE_ON = flagOn("late", "pfb_late_curve");
+/* v0.9 proposal (OFF by default – it would change the approved idea-4 contract "spacing frozen after L28, twins ≤ 15 %"):
+   ?late40=1 or localStorage pfb_late40="1" turns on a gentle L31–40 ramp. Sweep (20 seeds, L30–40): D12 92.0 → 91.5 %,
+   0 impossible either way (tests/results/late40-sweep.json). Awaiting Martin's decision. */
+const LATE40_ON = (function () { try { const v = new URLSearchParams(location.search).get("late40"); if (v === "1") return true; if (v === "0") return false;
+  return !!(window.SafeStorage && SafeStorage.get("pfb_late40") === "1"); } catch (e) { return false; } })();
+const LATE_BREATH = { 21: 1, 25: 1, 30: 1, 35: 1 };
+function lateRole(level) { return level < 21 ? null : LATE_BREATH[level] ? "breath" : "build"; }
+function levelConfig(level, opts) {
+  const c = levelConfigBase(level);
+  if (!LATE_ON || (opts && opts.endless) || c.level < 21) return c;
+  const L = c.level, role = lateRole(L);
+  c.role = role;
+  c.breathEvery = 6; // Director: every 6th gate a wider classic
+  c.spacing = Math.round(c.speed * (spacingSeconds(Math.min(L, 28)) + (role === "breath" ? 0.14 : 0)));
+  if (role === "breath") {
+    c.gap += 12; c.twinCh = 0.05; c.timingW = 0.6; c.driftMul = 0.7;
+  } else {
+    c.twinCh = Math.min(c.twinCh, 0.15);
+    // L31–40 build levels are identical under the approved freeze (speed/gap at cap, spacing frozen at L28).
+    // Optional ramp (flag late40, default off): −0.005 s spacing and +0.006 twin chance per level after L30
+    // (L40: 1.014 s ≥ v0.7's 1.000 s; twin 0.20 = the v0.7 cap). No tighter gap, no faster speed.
+    if (L > 30 && LATE40_ON) {
+      c.spacing = Math.round(c.speed * (spacingSeconds(28) - 0.005 * (L - 30)));
+      c.twinCh = Math.min(0.20, 0.15 + 0.006 * (L - 30));
+    }
+  }
+  return c;
+}
+function levelConfigBase(level) {
   level = Math.max(1, Math.floor(level));
   if (level === 1) {
     return { level, speed: TUNE.speed, gap: TUNE.gap, spacing: TUNE.spacing,
@@ -533,18 +574,21 @@ const Econ = {
   }
 };
 /* ============================================================
-   LJUD — swappable audio engine + sound packs (v0.3).
-   ENGINE (stable interface, sound-design-agnostic): master/sfx/music buses, setVolume (SFX),
-   setMusicVolume, mute via `muted`, pause()/resume() (also on visibilitychange), iOS unlock on the
-   first gesture (resume + 1-sample silent buffer; "interrupted" state handled), silent in Sim/tests.
-   PACKS (the sound design): "legacy" = the exact v0.2 sounds, DEFAULT. "v1-draft" = the Identity V1
-   draft (pentatonic streak, noise flap, music bed) — OFF until Martin approves a sound concept
-   (Audio Director / Audio Design Bible pending). Enable for review: ?audio=v1-draft or
-   localStorage pfb_audio_pack="v1-draft". A future pack only has to implement the cue names in CUES.
-   NOT verified on a real iPhone/Android.
+   LJUD — Audio engine v2 (phase 1) + sound packs.
+   ENGINE: master → (glide: limiter) → out; sfx + music(duck) buses; master/SFX/music volumes;
+   mute; pause reasons {game, hidden} (a visible tab never auto-resumes a paused game); resume
+   countdown lets only countdown ticks through; music returns when play resumes; iOS unlock on the
+   first gesture (resume + 1-sample silent buffer; "interrupted" handled); silent in Sim/tests.
+   PACKS: "legacy" = exact v0.2 sounds — DEFAULT in prod/dev/Perchance (unchanged until Martin
+   approves after a phone test). "glide-v1" = Glidmotivet (src/audio-glide.js): per-world/menu/
+   Endless/boss music themes + full SFX set — DEFAULT ONLY on the staging channel. "v1-draft" kept
+   for reference. Override: ?audio=<id> or localStorage pfb_audio_pack. NOT verified on a real phone.
    ============================================================ */
 const AUDIO_CUES = ["flap", "score", "near", "hit", "fall", "swoosh", "click", "chirp", "fanfare", "medal",
-  "worldComplete", "milestone", "feather", "unlock"];
+  "worldComplete", "milestone", "feather", "unlock",
+  /* v2 cues (glide-v1 only; legacy/v1-draft stay silent for these) */
+  "clickDeny", "countdown", "levelStart", "warnRock", "warnLaser", "warnSaw", "wind", "record", "victory",
+  "gameOver", "dailyStart", "levelUp", "motif", "bossAttack", "bossProjectile", "bossHit", "bossDefeat"];
 const SOUND_PACKS = {
   /* v0.2 sounds, byte-for-byte same parameters (gain now goes through the SFX bus, master 1.0 for this pack) */
   legacy: {
@@ -562,7 +606,7 @@ const SOUND_PACKS = {
     feather(A) { A.tone(1568, 0.09, "sine", 0.12, 2093); },
     unlock(A) { [659, 784, 988, 1318].forEach((f, i) => A.tone(f, 0.22, "triangle", 0.2, null, i * 0.1)); }
   },
-  /* DRAFT — not approved. Identity spec §9 proposal, kept for the Audio Director to review. */
+  /* DRAFT — not approved. Identity spec §9 proposal, kept for reference. */
   "v1-draft": {
     master: 0.8,
     music: { bpm: 100, root: 523, lead: [0, null, 7, 4, null, 9, 7, null, 2, null, 9, 7, null, 4, 2, null],
@@ -584,26 +628,48 @@ const SOUND_PACKS = {
     unlock(A) { [0, 4, 7, 12].forEach((s, i) => A.tone(A.semis(659, s), 0.22, "triangle", 0.18, null, i * 0.1)); }
   }
 };
+/* glide-v1: synthesis lives in src/audio-glide.js; the engine below routes it (limiter, voices, music). */
+if (window.GlideAudio) SOUND_PACKS["glide-v1"] = { master: 0.9, glide: true, music: "themes" };
+const DEFAULT_PACK = (window.GAME_BUILD && GAME_BUILD.channel === "staging" && SOUND_PACKS["glide-v1"]) ? "glide-v1" : "legacy";
 function pickSoundPack() {
-  let id = "legacy";
+  let id = DEFAULT_PACK;
   try { const q = new URLSearchParams(location.search).get("audio"); if (q && SOUND_PACKS[q]) id = q;
     else { const ls = window.SafeStorage ? SafeStorage.get("pfb_audio_pack") : localStorage.getItem("pfb_audio_pack"); if (ls && SOUND_PACKS[ls]) id = ls; } } catch (e) {}
   return id;
 }
+/* voice policy (glide): per-cue cooldown (ms) + max simultaneous; global cap for non-stingers */
+const GLIDE_VOICE = { flap: [30, 3], score: [25, 3], feather: [30, 3], near: [150, 1], click: [40, 2], clickDeny: [80, 1],
+  swoosh: [120, 1], countdown: [150, 1], warnRock: [250, 1], warnLaser: [250, 1], warnSaw: [250, 1], wind: [300, 1],
+  chirp: [200, 1], hit: [200, 1], fall: [200, 1], levelStart: [200, 1] };
+const GLIDE_MAX_VOICES = 12, MUSIC_XF = 1.2, NEAR_PX = 8;
 const AudioFX = {
-  ctx: null, muted: store.muted, volume: 1, musicVol: 0.5, packId: pickSoundPack(), paused: false,
-  _master: null, _sfx: null, _mus: null, _noise: null, _musTimer: null, _musNext: 0, _musStep: 0, _gesture: false, _unlocked: false,
+  ctx: null, muted: store.muted, volume: 1, musicVol: 0.5, masterVol: 1, packId: pickSoundPack(), defaultPack: DEFAULT_PACK, paused: false,
+  _why: { game: false, hidden: false },
+  _master: null, _sfx: null, _mus: null, _duck: null, _lim: null, _noise: null, _musTimer: null, _musNext: 0, _musStep: 0, _gesture: false, _unlocked: false,
+  _voices: [], _last: {}, _stg: null, stats: { played: 0, dropped: 0, stolen: 0 },
+  _mx: { want: null, cur: null, node: null, cache: new Map(), pending: {}, intensity: 0.4, boss: false, gate: 1, holdUntil: 0, preview: null, renderMs: [] },
   get pack() { return SOUND_PACKS[this.packId] || SOUND_PACKS.legacy; },
+  isGlide() { return !!this.pack.glide; },
   hasMusic() { return !!this.pack.music; },
-  setPack(id) { if (!SOUND_PACKS[id]) return false; this.packId = id; if (this._master) this._master.gain.value = this.pack.master; this.syncMusic(); return true; },
+  setPack(id) {
+    if (!SOUND_PACKS[id]) return false;
+    this.packId = id; this._route();
+    if (!this.isGlide()) this._stopTheme(0.2);
+    this.syncMusic(); return true;
+  },
   setVolume(v) {
     this.volume = Math.max(0, Math.min(1, Number(v)));
     if (!(this.volume > 0)) this.volume = 0;
     if (this._sfx) this._sfx.gain.value = this.volume;
   },
+  setMasterVolume(v) {
+    this.masterVol = Math.max(0, Math.min(1, Number(v))); if (!(this.masterVol > 0)) this.masterVol = 0;
+    if (this._master) this._master.gain.value = this.pack.master * this.masterVol;
+  },
+  _musGain() { return this.musicVol * (this.isGlide() ? 0.55 : 0.25); }, // legacy/v1-draft: ≈ −12 dB under SFX (unchanged)
   setMusicVolume(v) {
     this.musicVol = Math.max(0, Math.min(1, Number(v))); if (!(this.musicVol > 0)) this.musicVol = 0;
-    if (this._mus) this._mus.gain.value = this.musicVol * 0.25; // ≈ −12 dB under SFX
+    if (this._mus) this._mus.gain.value = this._musGain();
     this.syncMusic();
   },
   setMuted(m) { this.muted = !!m; this.syncMusic(); },
@@ -615,12 +681,19 @@ const AudioFX = {
       try { this.ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return; }
       try {
         const c = this.ctx;
-        this._master = c.createGain(); this._master.gain.value = this.pack.master; this._master.connect(c.destination);
+        this._master = c.createGain(); this._master.gain.value = this.pack.master * this.masterVol;
+        // glide limiter (≈ −1 dBTP ceiling; transparent below −6 dBFS). Legacy bypasses it (bit-identical path).
+        this._lim = c.createDynamicsCompressor();
+        this._lim.threshold.value = -6; this._lim.knee.value = 4; this._lim.ratio.value = 20; this._lim.attack.value = 0.002; this._lim.release.value = 0.12;
+        this._lim.connect(c.destination);
         this._sfx = c.createGain(); this._sfx.gain.value = this.volume; this._sfx.connect(this._master);
-        this._mus = c.createGain(); this._mus.gain.value = this.musicVol * 0.25; this._mus.connect(this._master);
+        this._duck = c.createGain(); this._duck.gain.value = 1; this._duck.connect(this._master);
+        this._mus = c.createGain(); this._mus.gain.value = this._musGain(); this._mus.connect(this._duck);
+        this._route();
         const len = Math.floor(c.sampleRate * 0.25), buf = c.createBuffer(1, len, c.sampleRate), d = buf.getChannelData(0);
         let seed = 12345; for (let i = 0; i < len; i++) { seed = (seed * 1103515245 + 12345) & 0x7fffffff; d[i] = seed / 0x3fffffff - 1; }
         this._noise = buf;
+        c.onstatechange = () => { if (this.paused && c.state === "running") { try { c.suspend(); } catch (e) {} } };
       } catch (e) {}
     }
     if (!this._unlocked && this.ctx) { // iOS unlock: play one silent sample inside the gesture
@@ -630,11 +703,65 @@ const AudioFX = {
     if (!this.paused && this.ctx && (this.ctx.state === "suspended" || this.ctx.state === "interrupted")) { try { this.ctx.resume(); } catch (e) {} }
     this.syncMusic();
   },
-  /* pause()/resume(): app hidden or game paused — suspends the context so nothing plays or drains battery */
-  pause() { this.paused = true; this.syncMusic(); if (this.ctx && this.ctx.state === "running") { try { this.ctx.suspend(); } catch (e) {} } },
-  resume() { this.paused = false; if (this._gesture && this.ctx && this.ctx.state !== "running") { try { this.ctx.resume(); } catch (e) {} } this.syncMusic(); },
+  _route() {
+    if (!this._master || !this.ctx) return;
+    try { this._master.disconnect(); } catch (e) {}
+    this._master.connect(this.isGlide() ? this._lim : this.ctx.destination);
+    this._master.gain.value = this.pack.master * this.masterVol;
+    if (this._mus) this._mus.gain.value = this._musGain();
+  },
+  /* pause reasons: "game" (pause menu) and "hidden" (tab/app). Context stays suspended while ANY is set. */
+  pause(why) { this._why[why || "hidden"] = true; this._applyPause(); },
+  resume(why) { this._why[why || "hidden"] = false; this._applyPause(); },
+  gamePause() { this.pause("game"); },
+  gameResume() { this.resume("game"); this._mx.gate = 0; }, // music held until the resume countdown ends
+  _applyPause() {
+    const p = this._why.game || this._why.hidden;
+    this.paused = p;
+    if (p) { this._killVoices(); if (this.ctx && this.ctx.state === "running") { try { this.ctx.suspend(); } catch (e) {} } }
+    else if (this._gesture && this.ctx && this.ctx.state !== "running") { try { this.ctx.resume(); } catch (e) {} }
+    this.syncMusic();
+  },
   out() { return this._sfx || (this.ctx && this.ctx.destination); },
-  play(cue) { if (this.silent() || this.volume <= 0 || this.paused) return; const f = this.pack[cue]; if (typeof f === "function") try { f.call(this.pack, this); } catch (e) {} },
+  play(cue, opts) {
+    if (this.silent() || this.volume <= 0 || this.paused) return;
+    try { if (S.state === "countdown" && cue !== "countdown") return; } catch (e) {} // resume countdown: ticks only
+    if (this.isGlide()) return this._glide(cue, opts);
+    const f = this.pack[cue]; if (typeof f === "function") try { f.call(this.pack, this); } catch (e) {}
+  },
+  _glide(cue, opts, force) {
+    const G = window.GlideAudio; if (!G || !G.CUES[cue]) return;
+    this.ensure(); const c = this.ctx; if (!c || !this._sfx) return;
+    const now = c.currentTime, info = G.CUE_INFO[cue] || {}, pol = GLIDE_VOICE[cue] || [60, 2];
+    this._voices = this._voices.filter(v => v.end > now);
+    if (!force) {
+      const last = this._last[cue] || -9;
+      if ((now - last) * 1000 < pol[0] || this._voices.filter(v => v.cue === cue).length >= pol[1]) { this.stats.dropped++; return; }
+      if (!info.stinger && this._voices.length >= GLIDE_MAX_VOICES) { this.stats.dropped++; return; }
+    }
+    const g = c.createGain(); g.gain.value = 1; g.connect(this._sfx);
+    if (info.stinger) { // one stinger at a time: higher/equal priority replaces, lower is dropped
+      const st = this._stg;
+      if (st && st.end > now) {
+        if (info.stinger < st.pri && !force) { this.stats.dropped++; try { g.disconnect(); } catch (e) {} return; }
+        try { st.g.gain.setTargetAtTime(0.0001, now, 0.03); } catch (e) {} this.stats.stolen++;
+      }
+    }
+    let end = now;
+    try { end = G.play(c, g, cue, now + 0.005, opts || {}); } catch (e) { return; }
+    const v = { cue, end: end + 0.1, g }; this._voices.push(v); this._last[cue] = now; this.stats.played++;
+    if (info.stinger) { this._stg = { pri: info.stinger, end: end, g }; this._duckFor(Math.max(0.4, end - now)); }
+    setTimeout(() => { try { g.disconnect(); } catch (e) {} }, Math.max(200, (end - now + 0.4) * 1000));
+  },
+  _duckFor(secs) {
+    if (!this._duck || !this.ctx) return; const t = this.ctx.currentTime, d = this._duck.gain;
+    d.cancelScheduledValues(t); d.setTargetAtTime(0.45, t, 0.03); d.setTargetAtTime(1, t + secs, 0.35); // −7 dB duck
+  },
+  _killVoices() {
+    const t = this.ctx ? this.ctx.currentTime : 0;
+    for (const v of this._voices) { try { v.g.gain.cancelScheduledValues(t); v.g.gain.setValueAtTime(0, t); } catch (e) {} }
+    this._voices = []; this._stg = null;
+  },
   tone(freq, dur, type, vol, slideTo, delay) {
     if (this.silent() || this.volume <= 0) return;
     this.ensure();
@@ -663,10 +790,12 @@ const AudioFX = {
     src.start(t0); src.stop(t0 + dur + 0.02);
   },
   semis(base, n) { return base * Math.pow(2, n / 12); },
-  /* ---- music (only packs that define `music`) ---- */
+  /* ---- music ---- */
+  _musicOk() { return this._gesture && !!this.ctx && !this.silent() && !this.paused && this.musicVol > 0 && !(typeof document !== "undefined" && document.hidden); },
   syncMusic() {
+    if (this.isGlide()) { if (this._musTimer) { clearInterval(this._musTimer); this._musTimer = null; } return this._applyTheme(); }
     const m = this.pack.music;
-    const want = !!m && this._gesture && this.ctx && !this.silent() && !this.paused && this.musicVol > 0 && !(typeof document !== "undefined" && document.hidden);
+    const want = !!m && this._musicOk();
     if (want && !this._musTimer) {
       this._musNext = this.ctx.currentTime + 0.1;
       this._musTimer = setInterval(() => this._schedule(), 120);
@@ -674,7 +803,7 @@ const AudioFX = {
   },
   _schedule() {
     const m = this.pack.music;
-    if (!m || !this.ctx || this.silent() || this.paused || this.musicVol <= 0) return this.syncMusic();
+    if (!m || typeof m !== "object" || !this.ctx || this.silent() || this.paused || this.musicVol <= 0) return this.syncMusic();
     const eighth = 60 / m.bpm / 2;
     while (this._musNext < this.ctx.currentTime + 0.3) {
       const i = this._musStep % m.lead.length, a = m.lead[i], b = m.bass[i % m.bass.length], t = this._musNext - this.ctx.currentTime;
@@ -689,10 +818,115 @@ const AudioFX = {
     o.type = type; o.frequency.value = f;
     g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(vol, t0 + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
     o.connect(g).connect(this._mus); o.start(t0); o.stop(t0 + dur + 0.05);
-  }
+  },
+  /* glide themes: offline-rendered seamless loops (base + drive layers), crossfaded */
+  setTheme(id) { this._mx.want = id || null; this._applyTheme(); },
+  setIntensity(x) {
+    const mx = this._mx; mx.intensity = Math.max(0, Math.min(1, Number(x) || 0));
+    if (mx.node && this.ctx) mx.node.dg.gain.setTargetAtTime(0.3 + 0.7 * mx.intensity, this.ctx.currentTime, 0.5);
+  },
+  setBossMode(on) { this._mx.boss = !!on; }, // hook for the future boss fights (phase 3); frame() then plays "boss"
+  preloadTheme(id) { if (this.isGlide() && this.ctx && id) this._renderTheme(id); },
+  _renderTheme(id) {
+    const mx = this._mx, G = window.GlideAudio;
+    if (mx.cache.has(id)) return Promise.resolve(mx.cache.get(id));
+    if (mx.pending[id]) return mx.pending[id];
+    const c = this.ctx, mk = (n, l, sr) => c.createBuffer(n, l, sr), t0 = performance.now();
+    mx.pending[id] = Promise.all([G.renderTheme(id, "base", 32000, mk), G.renderTheme(id, "drive", 32000, mk)]).then(([base, drive]) => {
+      delete mx.pending[id];
+      mx.renderMs.push(Math.round(performance.now() - t0)); if (mx.renderMs.length > 20) mx.renderMs.shift();
+      mx.cache.set(id, { base, drive });
+      for (const k of Array.from(mx.cache.keys())) { if (mx.cache.size <= 4) break; if (k !== mx.cur && k !== mx.want) mx.cache.delete(k); } // ≤ 4 themes in memory
+      return mx.cache.get(id);
+    }).catch(() => { delete mx.pending[id]; return null; });
+    return mx.pending[id];
+  },
+  _applyTheme() {
+    const mx = this._mx;
+    if (!this.isGlide() || !this._musicOk() || !mx.want) { if (mx.node) this._stopTheme(this.paused ? 0.02 : 0.6); return; }
+    if (mx.want === mx.cur && mx.node) return;
+    const id = mx.want;
+    if (mx.cache.has(id)) return this._startTheme(id, mx.cache.get(id));
+    this._renderTheme(id).then(b => { if (b && mx.want === id && mx.cur !== id) this._applyTheme(); });
+  },
+  _startTheme(id, b) {
+    const c = this.ctx, mx = this._mx, t = c.currentTime + 0.03, old = mx.node;
+    const g = c.createGain(), dg = c.createGain(), bs = c.createBufferSource(), ds = c.createBufferSource();
+    bs.buffer = b.base; ds.buffer = b.drive; bs.loop = ds.loop = true;
+    dg.gain.value = 0.3 + 0.7 * mx.intensity;
+    bs.connect(g); ds.connect(dg); dg.connect(g); g.connect(this._mus);
+    const xf = old ? MUSIC_XF : 0.5;
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(1, t + xf);
+    bs.start(t); ds.start(t);
+    if (old) this._fadeNode(old, MUSIC_XF);
+    mx.node = { id, g, dg, bs, ds }; mx.cur = id;
+  },
+  _fadeNode(n, secs) {
+    const t = this.ctx.currentTime;
+    try { n.g.gain.cancelScheduledValues(t); n.g.gain.setValueAtTime(Math.max(0.0001, n.g.gain.value), t); n.g.gain.exponentialRampToValueAtTime(0.0001, t + secs); n.bs.stop(t + secs + 0.05); n.ds.stop(t + secs + 0.05); } catch (e) {}
+  },
+  _stopTheme(secs) { const mx = this._mx; if (mx.node && this.ctx) this._fadeNode(mx.node, secs || 0.6); mx.node = null; mx.cur = null; },
+  /* per render frame (live only): music state from the game state + warning/wind cues. */
+  frame() {
+    if (!this.ctx || !this.isGlide() || window.__DW_SIM || S.simMode) return;
+    const mx = this._mx, st = S.state, now = this.ctx.currentTime;
+    let want = mx.preview ? (mx.preview === "__none__" ? null : mx.preview) : "menu", inten = 0.35;
+    if (!mx.preview) {
+      const inRun = st === "playing" || st === "countdown" || st === "ready" || st === "paused";
+      if (mx.boss) want = "boss";
+      else if (inRun || st === "dying") want = S.runMode === "endless" ? "endless" : window.GlideAudio.themeForEnv(S.envId);
+      if (st === "playing") inten = S.runMode === "endless" ? 0.45 + 0.55 * Math.min(1, S.score / 60) : 0.4 + 0.6 * Math.min(1, S.score / Math.max(1, (S.cfg && S.cfg.target) || 10));
+      else if (st === "ready" || st === "countdown") inten = 0.15;
+      if (st === "dying" || st === "gameover" || st === "clear" || st === "scoutdone") { // stinger owns the moment, then the menu theme
+        if (!mx.endEp) { mx.endEp = 1; mx.holdUntil = now + 2.4; }
+        want = now < mx.holdUntil ? null : "menu";
+      } else mx.endEp = 0;
+    }
+    if (want !== mx.want) this.setTheme(want);
+    if (!mx.preview && Math.abs(inten - mx.intensity) > 0.04) this.setIntensity(inten);
+    // resume countdown: music held (gate 0) until play continues
+    const gate = (st === "countdown" && mx.gate === 0) ? 0 : 1;
+    if (gate === 1) mx.gate = 1;
+    if (this._mus) { const tg = this._musGain() * gate; if (Math.abs(this._mus.gain.value - tg) > 0.002) this._mus.gain.setTargetAtTime(tg, now, gate ? 0.25 : 0.02); }
+    if (st !== "playing") return;
+    // rising-edge warnings for obstacles ahead (one cue per edge, never repeated per frame)
+    const bx = S.bird.x;
+    let laserDone = false;
+    for (const ob of S.pipes) {
+      if (ob.passed || ob.x + ob.w < bx) continue;
+      if (ob.fam === "rock" && ob.warnOn && !ob._aw) { ob._aw = 1; this.play("warnRock"); }
+      else if (ob.fam === "blade" && !ob._aw && ob.x < S.W - 10) { ob._aw = 1; this.play("warnSaw"); }
+      else if (ob.fam === "laser" && !laserDone && ob.x < S.W) {
+        laserDone = true; // only the next laser ahead
+        const ph = window.OBSTACLES.laser.phase(ob);
+        if (ph === "warn" && ob._aph !== "warn") this.play("warnLaser");
+        ob._aph = ph;
+      } else if (ob.fam === "wind" && !ob._aw && bx > ob.x) { ob._aw = 1; this.play("wind"); }
+    }
+  },
+  /* per physics step, live only (called after collisions ⇒ never on the death frame): near-miss */
+  nearStep(br) {
+    if (S.simMode || !this.isGlide()) return;
+    for (const ob of S.pipes) {
+      if (ob._anear) continue;
+      if (ob.passed) { ob._anear = 1; if (ob._aclr != null && ob._aclr > 0 && ob._aclr < NEAR_PX) this.play("near"); continue; }
+      if (S.bird.x + br <= ob.x + 4 || S.bird.x - br >= ob.x + ob.w - 4) continue;
+      const mod = window.OBSTACLES[ob.fam];
+      const g = mod.gapNow ? mod.gapNow(ob) : { top: ob.gapY - ob.gap / 2, bot: ob.gapY + ob.gap / 2 };
+      const clr = Math.min(S.bird.y - br - (g.top + 3), (g.bot - 3) - (S.bird.y + br));
+      ob._aclr = ob._aclr == null ? clr : Math.min(ob._aclr, clr);
+    }
+  },
+  /* sound test (staging Ljudtest): audition any theme/cue regardless of pack */
+  previewTheme(id) { this.ensure(); this._mx.preview = id || null; if (!this.isGlide()) return false; this.setTheme(id && id !== "__none__" ? id : null); return true; },
+  previewCue(name, opts) { this.ensure(); if (this.silent() || this.paused) return false; this._glide(name, opts, true); return true; }
 };
-for (const cue of AUDIO_CUES) AudioFX[cue] = function () { this.play(cue); };
-try { document.addEventListener("visibilitychange", () => { if (document.hidden) AudioFX.pause(); else AudioFX.resume(); }); } catch (e) {}
+for (const cue of AUDIO_CUES) AudioFX[cue] = function (opts) { this.play(cue, opts); };
+try {
+  document.addEventListener("visibilitychange", () => { if (document.hidden) AudioFX.pause("hidden"); else AudioFX.resume("hidden"); });
+  window.addEventListener("pagehide", () => AudioFX.pause("hidden"));
+  window.addEventListener("pageshow", () => { if (!document.hidden) AudioFX.resume("hidden"); });
+} catch (e) {}
 /* ---------- DOM ---------- */
 const $ = id => document.getElementById(id);
 const canvas = $("gameCanvas"), ctx = canvas.getContext("2d");
@@ -842,7 +1076,7 @@ window.addEventListener("pagehide", autoPause);
 
 /* ---------- UI-hjälp ---------- */
 function hideAll() {
-  [menuOv, levelsOv, worldsOv, readyOv, pauseOv, overOv, clearOv, settingsOv, dailyOv, birdsOv, document.getElementById("courseOv")].forEach(o => { if (o) o.hidden = true; });
+  [menuOv, levelsOv, worldsOv, readyOv, pauseOv, overOv, clearOv, settingsOv, dailyOv, birdsOv, document.getElementById("courseOv"), document.getElementById("scoutOv")].forEach(o => { if (o) o.hidden = true; });
   tutorial.hidden = true;
 }
 function showMenu() {
@@ -906,6 +1140,7 @@ function showReady(level) {
   // nytt försök ⇒ ny deterministisk sekvens (loggas för replay/daglig utmaning)
   S.attempt++;
   S.runSeed = (((Math.random() * 0xFFFFFFFF) >>> 0) ^ (S.attempt * 2654435761) ^ (S.level * 40503)) >>> 0;
+  S.lastOfficialSeed = S.runSeed; // E9: the scout run can replay exactly this course
   window.RNG.reset(S.runSeed);
   resetBird();
   Econ.resetRun(); // Phase 1A: nollställ försöksräknare för fjädrar
@@ -924,11 +1159,24 @@ function showReady(level) {
   }
   const intro = window.Director.describe(level);
   if (intro) $("readyDesc").innerHTML += "<br><b>" + intro + "</b>";
+  if (window.thermalsActive && thermalsActive(S)) $("readyDesc").innerHTML += "<br>" + I18N.t("ready_thermals"); // round 3 idea 1
   $("readyDesc").innerHTML += I18N.t("ready_mode_line", {
-    m: I18N.t(S.mode === "sky" ? "mode_sky" : "mode_classic"), s: S.runSeed });
+    m: I18N.t(S.mode === "sky" ? (window.THERMALS_ON ? "mode_sky_th" : "mode_sky") : "mode_classic"), s: S.runSeed });
   $("readyBtn").innerHTML = I18N.t("ready_btn", { n: level });
+  const sb = $("scoutBtn"); if (sb) { sb.hidden = !Scout.offered(level); sb.innerHTML = I18N.t("scout_btn"); }
   tutorial.hidden = true; // visas först under flygning (nivå 1), så det inte krockar med kortet
   showCoachTip(level); // Stage C: kort familjetips (auto-dismiss, sett-flaggor sparas)
+  syncAirLegend();
+}
+/* windRules legend (L8–10 / Endless diff 8–10 while the flag is on): one visual language for air. */
+function syncAirLegend() {
+  const on = !!(window.Director && Director.windRulesActive && Director.windRulesActive(S));
+  for (const id of ["airLegendReady", "airLegendPause"]) {
+    const el = document.getElementById(id); if (!el) continue;
+    el.hidden = !on; if (!on) continue;
+    el.innerHTML = '<b>' + I18N.t("air_legend_title") + '</b><br><span style="color:#13a57c;font-weight:800">▲</span> ' + I18N.t("air_legend_lift") +
+      '<br><span style="color:#d9831a;font-weight:800">▼</span> ' + I18N.t("air_legend_push") + '<br>' + I18N.t("air_legend_rule");
+  }
 }
 
 /* ============================================================
@@ -938,7 +1186,7 @@ function showReady(level) {
    ============================================================ */
 function endlessCfg(score) {
   const dl = Math.min(1 + Math.floor(Math.max(0, score) / 10), 50);
-  const c = levelConfig(dl);
+  const c = levelConfig(dl, { endless: true }); // round 3: the late-curve rhythm is for the campaign only
   c.target = Infinity; c.endless = true; c.dl = dl;
   return c;
 }
@@ -976,9 +1224,11 @@ function showEndless() {
   $("readyTitle").textContent = I18N.t("endless_ready_title");
   $("readyDesc").innerHTML = I18N.t("endless_ready_desc", { b: eb, m: S.mode === "sky" ? "SKY" : "Classic" });
   $("readyDesc").innerHTML += I18N.t("ready_mode_line", {
-    m: I18N.t(S.mode === "sky" ? "mode_sky" : "mode_classic"), s: S.runSeed });
+    m: I18N.t(S.mode === "sky" ? (window.THERMALS_ON ? "mode_sky_th" : "mode_sky") : "mode_classic"), s: S.runSeed });
   $("readyBtn").innerHTML = I18N.t("endless_start_btn");
+  if ($("scoutBtn")) $("scoutBtn").hidden = true;
   hideCoachTip(false);
+  syncAirLegend();
 }
 /* Växer med poängen: svårighet var 10:e, ny värld var 12:e hinder. */
 function refreshEndless() {
@@ -1018,6 +1268,7 @@ function startPlaying() {
   if (S.rotateBlocked) return; // A2: rotationsspärr
   S.state = "playing";
   S.playStartT = S.time;
+  AudioFX.levelStart(); // v2 (glide only)
   if (S.runMode === "daily") Daily.onStart(); // fixed start state ⇒ receipt replays exactly in Sim; seed not logged
   else console.log("[dipwing] run seed " + S.runSeed + " level " + S.level + " mode " + S.mode);
   hideAll(); hud.hidden = false;
@@ -1027,7 +1278,7 @@ function startPlaying() {
     tutorial.hidden = false;
   }
   hideCoachTip(true); // coachen har gjort sitt när spelet startar
-  if (window.Analytics && S.runMode !== "daily") Analytics.emit("level_start", { level: S.level, mode: S.mode, seed: S.runSeed });
+  if (window.Analytics && S.runMode !== "daily" && S.runMode !== "scout") Analytics.emit("level_start", { level: S.level, mode: S.mode, seed: S.runSeed });
   flap();
 }
 
@@ -1040,6 +1291,11 @@ function updateHUD() {
   }
   if (S.runMode === "daily") { // idea 5
     levelPill.textContent = I18N.t("course_hud", { s: S.score, n: S.cfg.target });
+    progressFill.style.width = clamp(S.score / S.cfg.target * 100, 0, 100) + "%";
+    return;
+  }
+  if (S.runMode === "scout") { // E9: practice is always labelled
+    levelPill.textContent = I18N.t("scout_hud", { s: S.score, n: S.cfg.target });
     progressFill.style.width = clamp(S.score / S.cfg.target * 100, 0, 100) + "%";
     return;
   }
@@ -1066,6 +1322,12 @@ function setMode(m) {
   syncModeBtns();
   if (changed && window.Analytics) Analytics.emit("mode_change", { mode: m });
   if (S.state === "menu") refreshMenu();
+  // round 3 idea 1: Sky now plays differently ⇒ re-draw the ready card (seed/explanation) when the mode flips there
+  if (changed && S.state === "ready" && !S.simMode) {
+    if (S.runMode === "adventure") showReady(S.level);
+    else if (S.runMode === "endless") showEndless();
+    else if (S.runMode === "scout") Scout.show(S.level, S.scoutSeed);
+  }
   try {
     if (worldsOv && !worldsOv.hidden) renderWorlds();
     if (levelsOv && !levelsOv.hidden) renderLevelGrid();
@@ -1091,6 +1353,8 @@ function doPause() {
   Econ.flush(); // Gate C: spara buffert vid paus
   S.pausedFrom = S.state === "countdown" ? "playing" : S.state;
   S.state = "paused";
+  AudioFX.gamePause(); // v2: hard silence while paused (no auto-resume on a visible tab)
+  syncAirLegend();
   hideCountdown();
   hideAll(); pauseOv.hidden = false;
 }
@@ -1100,6 +1364,7 @@ function showCountdownNum(n) {
   const el = document.getElementById("countdown"); if (!el) return;
   if (el.textContent !== String(n)) {
     el.textContent = String(n);
+    AudioFX.countdown({ n }); // v2 (glide only): motif tick per number
     if (!reducedMotion()) { el.classList.remove("pop"); void el.offsetWidth; el.classList.add("pop"); }
   }
   el.hidden = false;
@@ -1110,8 +1375,9 @@ function doResume() {
   const to = S.pausedFrom || "playing";
   hideAll();
   hud.hidden = false;
-  if (to === "ready") { S.state = "ready"; readyOv.hidden = false; return; }
+  if (to === "ready") { S.state = "ready"; readyOv.hidden = false; AudioFX.gameResume(); return; }
   if (S.rotateBlocked) { S.state = "paused"; pauseOv.hidden = false; return; }
+  AudioFX.gameResume(); // countdown ticks only; music returns when play continues
   S.state = "countdown"; S.countdownT = COUNTDOWN_S;
   showCountdownNum(COUNTDOWN_S);
 }
@@ -1132,6 +1398,7 @@ function gameOver(hitGround) {
 
 function showGameOver() {
   S.state = "gameover";
+  AudioFX.gameOver(); // v2 (glide only): game-over stinger; a new record replaces it below
   Econ.flush(); // Gate C: krasch sparar intjänade fjädrar (ingen bonus vid krasch)
   if (S.runMode === "daily") { hud.hidden = true; return Daily.open(); } // own result panel, no revive, no records
   if (S.runMode === "endless") return showEndlessOver();
@@ -1141,6 +1408,7 @@ function showGameOver() {
   $("overScore").textContent = S.score;
   $("overBest").textContent = store.bestFor(S.mode, S.level) + (isBest ? I18N.t("new_best") : "");
   $("overTarget").textContent = S.cfg.target;
+  if ($("overScoutBtn")) $("overScoutBtn").hidden = !Scout.offered(S.level); // E9: optional, never pushed
   $("medal").textContent = medalEmoji(S.score, S.cfg.target);
   $("overKicker").textContent = S.score >= S.cfg.target * 0.7 ? I18N.t("over_kicker_close") : I18N.t("over_kicker_over");
   $("overTitle").textContent = S.score === 0 ? I18N.t("over_title_0") : S.score >= 7 && S.level === 1 ? I18N.t("over_title_good") : I18N.t("over_title_bad");
@@ -1170,6 +1438,7 @@ function endlessMedal(score) {
 function showEndlessOver() {
   const isBest = store.setEndlessBest(S.mode, S.score);
   S.endlessIsBest = !!isBest;
+  if (isBest) AudioFX.record();
   hideAll(); overOv.hidden = false; hud.hidden = true;
   $("overScore").textContent = S.score;
   $("overBest").textContent = store.endlessBest(S.mode) + (isBest ? I18N.t("new_best") : "");
@@ -1196,6 +1465,7 @@ function showOverdriveOver() {
   const stars = starCount(S.score, base);
   const saved = store.setMedal(S.mode, S.level, Math.max(1, stars));
   const isBest = store.setBestFor(S.mode, S.level, S.score); // A1: overdrive-poäng är nivåns rekord
+  if (stars >= 2) AudioFX.medal(); else if (isBest) AudioFX.record();
   S.best = store.bestFor(S.mode, S.level);
   hideAll(); overOv.hidden = false; hud.hidden = true;
   $("overScore").textContent = S.score;
@@ -1222,7 +1492,7 @@ function levelClear() {
   if (S.runMode === "daily") { Daily.end(true); S.state = "clear"; S.clearT = 0; AudioFX.fanfare(); confetti(); tutorial.hidden = true; return; }
   S.state = "clear";
   S.clearT = 0;
-  AudioFX.fanfare();
+  AudioFX.play(AudioFX.isGlide() ? "victory" : "fanfare"); // legacy keeps its fanfare
   confetti();
   Econ.flush(); // Gate C: spara hinderfjädrar före förstaclear-bonusen
   const isBest = store.setBestFor(S.mode, S.level, S.score);
@@ -1446,7 +1716,7 @@ const Daily = {
     S.dailyFlaps = []; S.dailyMarks = []; S.dailyWall = 0; S.dailyEnded = false;
     resetBird();
     Econ.resetRun();
-    hideAll(); readyOv.hidden = false; hud.hidden = false;
+    hideAll(); readyOv.hidden = false; hud.hidden = false; syncAirLegend();
     updateHUD();
     const d = this.forDate(info.date);
     $("readyPill").textContent = I18N.t("course_pill");
@@ -1455,6 +1725,7 @@ const Daily = {
       "<br>" + I18N.t("course_best_line", { b: d.best ? d.best.score : 0, n: info.target, t: d.attempts }) +
       "<br><span class='tiny'>" + I18N.t("course_midnight") + "</span>"; // no seed line (E: hide seed in daily UI)
     $("readyBtn").innerHTML = I18N.t("course_play");
+    if ($("scoutBtn")) $("scoutBtn").hidden = true; // E9: never on the daily course
     tutorial.hidden = true;
     hideCoachTip(false);
   },
@@ -1626,6 +1897,101 @@ if ($("coursePlayBtn")) {
   $("courseDlBtn").onclick = () => { AudioFX.click(); Daily.download(); };
   $("courseMenuBtn").onclick = () => { AudioFX.click(); showMenu(); };
 }
+/* ============================================================
+   Round 3 · idea 4 · E9: SCOUT RUN (spejarrunda) — optional practice.
+   - Same level, same seed as the attempt you just died on (or a fresh one from the ready card).
+   - You cannot crash: a hit is counted once per obstacle and you fly on; the ground bounces you up.
+   - Telegraph: a dashed line through the centre of the next two gaps.
+   - NEVER calls Econ.awardPipe / awardFirstClear, store.setBestFor / setCleared / setMedal, unlocked++,
+     Daily or Analytics level events. No fanfare, no confetti. Sim never runs in scout mode (Sim.begin
+     forces runMode "adventure"), so solvability/physics tooling is unaffected.
+   - Flag: ?scout=0 or SafeStorage "pfb_scout"="0" hides every entry point. Offered from level SCOUT_FROM.
+   ============================================================ */
+const SCOUT_ON = flagOn("scout", "pfb_scout");
+const SCOUT_FROM = 18; // where D24 starts to drop sharply (difficulty sweep v0.6)
+const Scout = {
+  offered(level) { return SCOUT_ON && S.runMode === "adventure" && !S.overdrive && level >= SCOUT_FROM; },
+  show(level, seed) {
+    if (!SCOUT_ON) return;
+    setLevel(level);
+    S.runMode = "scout"; S.diff = level; S.overdrive = false; S.odBaseTarget = null;
+    S.state = "ready";
+    S.score = 0; S.pipes = []; S.particles = []; S.popups = [];
+    S.camX = 0; S.shake = 0; S.prevGapY = null;
+    S.ptime = 0; S.__stepIdx = 0; LIVE_ACC.acc = 0;
+    S.spawnLastFam = null; S.spawnCount = 0; S.simResult = null;
+    S.runSeed = (seed >>> 0) || ((((Math.random() * 0xFFFFFFFF) >>> 0) ^ (level * 40503) ^ 0x5C0) >>> 0);
+    S.scoutSeed = S.runSeed; S.scoutHits = 0; S.scoutGroundT = 0;
+    window.RNG.reset(S.runSeed);
+    resetBird();
+    Econ.resetRun();
+    hideAll(); readyOv.hidden = false; hud.hidden = false; syncAirLegend();
+    updateHUD();
+    const wi = WORLD_INFO[S.worldKey];
+    $("readyPill").textContent = I18N.t("scout_pill", { n: level });
+    $("readyTitle").textContent = I18N.t("scout_title", { n: level });
+    $("readyDesc").innerHTML = I18N.t("scout_desc") + I18N.t("ready_mode_line", {
+      m: I18N.t(S.mode === "sky" ? (window.THERMALS_ON ? "mode_sky_th" : "mode_sky") : "mode_classic"), s: S.runSeed });
+    $("readyBtn").innerHTML = I18N.t("scout_start_btn");
+    const sb = $("scoutBtn"); if (sb) { sb.hidden = false; sb.innerHTML = I18N.t("scout_official_btn"); }
+    tutorial.hidden = true;
+    if (typeof hideCoachTip === "function") hideCoachTip(true);
+    void wi;
+  },
+  // called from stepPlaying instead of the lethal collision block
+  collide(br, groundY) {
+    if (S.bird.y + br >= groundY) {
+      S.bird.y = groundY - br; S.bird.vy = TUNE.flapVelocity * 0.7;
+      if (S.ptime - S.scoutGroundT > 0.6) { S.scoutGroundT = S.ptime; this.mark(S.bird.x, groundY - 24); }
+    }
+    for (const ob of S.pipes) {
+      if (ob.scoutHit) continue;
+      if (window.OBSTACLES[ob.fam].collide(ob, S.bird.x, S.bird.y, br, S)) { ob.scoutHit = true; this.mark(S.bird.x, S.bird.y - 26); }
+    }
+  },
+  mark(x, y) {
+    S.scoutHits++;
+    if (S.simMode) return;
+    S.popups.push({ x, y, t: 0, txt: "✕ " + I18N.t("scout_hit") });
+    if (!reducedMotion()) burst(x, y, 6, true);
+    AudioFX.click(); // soft existing tick — no crash sound, no new SFX
+  },
+  finish() {
+    if (S.state !== "playing") return;
+    S.state = "scoutdone";
+    tutorial.hidden = true;
+    hideAll(); hud.hidden = true;
+    const n = S.score, h = S.scoutHits;
+    $("scoutLine").textContent = h === 0 ? I18N.t("scout_done_clean") : I18N.t("scout_done_line", { h, n });
+    $("scoutRealBtn").innerHTML = I18N.t("scout_real_btn", { n: S.level });
+    $("scoutOv").hidden = false;
+  },
+  // telegraph: dashed line from the bird through the centre of the next two gaps (render only)
+  draw(c) {
+    const next = S.pipes.filter(o => !o.passed && o.x + o.w > S.bird.x - 12).slice(0, 2);
+    if (!next.length) return;
+    c.save();
+    c.strokeStyle = "rgba(255,255,255,0.75)"; c.lineWidth = 3; c.setLineDash([10, 9]);
+    if (!reducedMotion()) c.lineDashOffset = -((S.time * 40) % 19);
+    c.beginPath(); c.moveTo(S.bird.x + 14, S.bird.y);
+    for (const o of next) {
+      const fam = window.OBSTACLES[o.fam];
+      const g = fam.gapNow ? fam.gapNow(o) : { top: o.gapY - o.gap / 2, bot: o.gapY + o.gap / 2 };
+      const cy = (g.top + g.bot) / 2;
+      c.lineTo(o.x + 4, cy); c.lineTo(o.x + o.w - 4, cy);
+    }
+    c.stroke(); c.setLineDash([]);
+    c.restore();
+  }
+};
+if ($("scoutBtn")) $("scoutBtn").onclick = () => {
+  AudioFX.click();
+  if (S.runMode === "scout") showReady(S.level); else Scout.show(S.level, S.runSeed);
+};
+if ($("overScoutBtn")) $("overScoutBtn").onclick = () => { AudioFX.click(); Scout.show(S.level, S.lastOfficialSeed); };
+if ($("scoutRealBtn")) $("scoutRealBtn").onclick = () => { AudioFX.click(); showReady(S.level); };
+if ($("scoutAgainBtn")) $("scoutAgainBtn").onclick = () => { AudioFX.click(); Scout.show(S.level, S.scoutSeed); };
+if ($("scoutMenuBtn")) $("scoutMenuBtn").onclick = () => { AudioFX.click(); showMenu(); };
 /* ---------- nivåväljare (per värld) + världskarta ----------
    Allt här är UI/sparande. Låsregler: level > unlocked ⇒ låst.
    Replay sänker aldrig unlock. Bästa/cleared visas per läge (Classic/Sky). */
@@ -1980,7 +2346,7 @@ function renderBirds() {
           if (r.ok) {
             AudioFX.unlock();
             if (slot === "bird") Econ.equipBird(def.id); else Econ.equipCosmetic(slot, def.id); // unlock equips directly
-          } else AudioFX.hit();
+          } else AudioFX.play(AudioFX.isGlide() ? "clickDeny" : "hit"); // legacy unchanged
           renderBirds();
           try { const note = $("birdsNote"); if (note && r.ok) { note.hidden = false; note.textContent = I18N.t("bird_unlocked", { n: name }); } } catch (e) {}
         }
@@ -1995,6 +2361,82 @@ function resetBird() {
   S.bird.y = S.H * 0.44;
   S.bird.vy = 0; S.bird.rot = 0; S.bird.alive = true;
 }
+/* ============================================================
+   Ljudtest (sound test) — STAGING/DEV ONLY panel to audition every glide-v1 music theme and SFX
+   on a phone. Shown from Settings when the build channel is "staging"/"dev" (or ?soundtest=1).
+   Temporarily switches to the glide-v1 pack while open and restores the previous pack on close
+   (never saved). Boss cues/theme are labelled as previews: no boss gameplay exists yet.
+   ============================================================ */
+const SoundTest = {
+  _ov: null, _prevPack: null, _playing: null,
+  available() {
+    if (!window.GlideAudio) return false;
+    let q = false; try { q = new URLSearchParams(location.search).get("soundtest") === "1"; } catch (e) {}
+    const ch = window.GAME_BUILD && GAME_BUILD.channel;
+    return q || ch === "staging" || ch === "dev";
+  },
+  _build() {
+    const G = window.GlideAudio, t = (k) => I18N.t(k);
+    const ov = document.createElement("div"); ov.className = "overlay"; ov.id = "soundTestOv"; ov.hidden = true;
+    const card = document.createElement("div"); card.className = "card wide"; card.style.maxHeight = "92vh"; card.style.overflowY = "auto";
+    const h = document.createElement("h1"); h.style.fontSize = "24px"; h.textContent = t("soundtest_title"); card.appendChild(h);
+    const p = document.createElement("p"); p.className = "desc"; p.style.fontSize = "13px"; p.textContent = t("soundtest_note"); card.appendChild(p);
+    const muted = document.createElement("div"); muted.className = "tiny"; muted.id = "stMuted"; muted.style.color = "#c0392b"; card.appendChild(muted);
+    const sec = (k) => { const d = document.createElement("div"); d.className = "neon"; d.style.marginTop = "10px"; d.textContent = t(k); card.appendChild(d); };
+    const lang = (window.I18N && I18N.lang) || "sv";
+    sec("soundtest_music");
+    const grid = document.createElement("div"); grid.className = "btnrow"; grid.style.flexWrap = "wrap"; card.appendChild(grid);
+    for (const id of G.THEME_ORDER) {
+      const th = G.THEMES[id], b = document.createElement("button");
+      b.className = "btn secondary"; b.dataset.theme = id; b.style.margin = "3px"; b.style.fontSize = "13px";
+      b.textContent = "▶ " + (lang === "en" ? th.en : th.sv) + " · " + th.bpm + " bpm";
+      b.title = th.mood + (th.preview ? " — " + t("soundtest_preview") : "");
+      b.onclick = () => this.playTheme(id);
+      grid.appendChild(b);
+    }
+    const stop = document.createElement("button"); stop.className = "btn secondary"; stop.id = "stStop"; stop.style.marginTop = "6px";
+    stop.textContent = t("soundtest_stop"); stop.onclick = () => this.playTheme(null); card.appendChild(stop);
+    const il = document.createElement("div"); il.className = "tiny"; il.style.marginTop = "6px"; il.textContent = t("soundtest_intensity"); card.appendChild(il);
+    const sl = document.createElement("input"); sl.type = "range"; sl.min = "0"; sl.max = "100"; sl.value = "60"; sl.id = "stIntensity";
+    sl.style.width = "100%"; sl.setAttribute("aria-label", t("soundtest_intensity"));
+    sl.oninput = () => AudioFX.setIntensity(Number(sl.value) / 100); card.appendChild(sl);
+    const now = document.createElement("div"); now.className = "tiny"; now.id = "stNow"; now.style.marginTop = "4px"; card.appendChild(now);
+    sec("soundtest_sfx");
+    const sg = document.createElement("div"); sg.className = "btnrow"; sg.style.flexWrap = "wrap"; card.appendChild(sg);
+    for (const name of Object.keys(G.CUES)) {
+      const info = G.CUE_INFO[name] || { sv: name }, b = document.createElement("button");
+      b.className = "btn secondary"; b.dataset.cue = name; b.style.margin = "3px"; b.style.fontSize = "12px";
+      b.textContent = "🔊 " + (info.sv || name) + (info.cat === "boss" ? "" : "");
+      b.onclick = () => { this._sync(); AudioFX.previewCue(name, { n: name === "countdown" ? 3 - (this._cd = ((this._cd || 0) + 1) % 4) : (this._sn = ((this._sn || 0) + 1) % 7) }); };
+      sg.appendChild(b);
+    }
+    const back = document.createElement("button"); back.className = "btn secondary"; back.style.marginTop = "12px";
+    back.textContent = t("settings_back"); back.onclick = () => { AudioFX.click(); this.close(); };
+    card.appendChild(back);
+    ov.appendChild(card); document.body.appendChild(ov);
+    this._ov = ov;
+  },
+  _sync() {
+    const m = document.getElementById("stMuted"); if (m) m.textContent = AudioFX.muted ? I18N.t("soundtest_muted") : "";
+    const n = document.getElementById("stNow");
+    if (n) { const id = this._playing, th = id && window.GlideAudio.THEMES[id];
+      n.textContent = th ? "♪ " + th.sv + " — " + th.mood + " · " + Math.round(window.GlideAudio.themeLen(id)) + " s loop" + (th.preview ? " · " + I18N.t("soundtest_preview") : "") : ""; }
+  },
+  playTheme(id) { this._playing = id; AudioFX.previewTheme(id || "__none__"); if (!id) AudioFX.setTheme(null); this._sync(); },
+  open() {
+    if (!this.available()) return;
+    if (!this._ov) this._build();
+    this._prevPack = AudioFX.packId;
+    if (!AudioFX.isGlide()) AudioFX.setPack("glide-v1"); // session only, never saved
+    hideAll(); this._ov.hidden = false; this._sync();
+  },
+  close() {
+    AudioFX._mx.preview = null; AudioFX.setTheme(null); this._playing = null;
+    if (this._prevPack && this._prevPack !== AudioFX.packId) AudioFX.setPack(this._prevPack);
+    if (this._ov) this._ov.hidden = true;
+    openSettings();
+  }
+};
 function flap() {
   if (S.flapLock > 0) return;
   S.bird.vy = TUNE.flapVelocity;
@@ -2038,7 +2480,7 @@ $("readyBtn").onclick = () => { AudioFX.ensure(); AudioFX.click(); startPlaying(
 $("readyMenuBtn").onclick = () => { AudioFX.click(); showMenu(); };
 $("pauseBtn").onclick = () => { AudioFX.click(); doPause(); };
 $("resumeBtn").onclick = () => { AudioFX.click(); doResume(); };
-$("pauseRestartBtn").onclick = () => { AudioFX.click(); if (S.runMode === "daily") Daily.showReady(); else if (S.runMode === "endless") showEndless(); else showReady(S.level); };
+$("pauseRestartBtn").onclick = () => { AudioFX.click(); if (S.runMode === "scout") Scout.show(S.level, S.scoutSeed); else if (S.runMode === "daily") Daily.showReady(); else if (S.runMode === "endless") showEndless(); else showReady(S.level); };
 $("pauseMenuBtn").onclick = () => { AudioFX.click(); showMenu(); };
 $("retryBtn").onclick = () => { AudioFX.click(); if (S.runMode === "daily") Daily.showReady(); else if (S.runMode === "endless") showEndless(); else showReady(S.level); }; // Gate D: endless startar om direkt
 $("overMenuBtn").onclick = () => { AudioFX.click(); showMenu(); };
@@ -2082,6 +2524,17 @@ if ($("volSlider")) $("volSlider").oninput = () => {
   try { if (window.SaveV2) SaveV2.set("soundVol", AudioFX.volume); } catch (e) {}
   if (window.Analytics) Analytics.emit("sound_change", { vol: AudioFX.volume });
 };
+if ($("masterSlider")) $("masterSlider").oninput = () => {
+  AudioFX.setMasterVolume(Number($("masterSlider").value) / 100);
+  try { if (window.SaveV2) SaveV2.set("masterVol", AudioFX.masterVol); } catch (e) {}
+};
+if ($("audioPackBtn")) $("audioPackBtn").onclick = () => { // staging/dev only (row hidden in prod)
+  AudioFX.ensure();
+  const next = AudioFX.isGlide() ? "legacy" : "glide-v1";
+  if (AudioFX.setPack(next)) { try { SafeStorage.set("pfb_audio_pack", next); } catch (e) {} }
+  AudioFX.click(); syncSettingsUI();
+};
+if ($("soundTestBtn")) $("soundTestBtn").onclick = () => { AudioFX.ensure(); AudioFX.click(); SoundTest.open(); };
 if ($("musicSlider")) $("musicSlider").oninput = () => {
   AudioFX.setMusicVolume(Number($("musicSlider").value) / 100);
   try { if (window.SaveV2) SaveV2.set("musicVol", AudioFX.musicVol); } catch (e) {}
@@ -2258,7 +2711,7 @@ function update(dt) {
 
   if (S.state === "countdown") { // A8: fryst värld under 3-2-1
     S.countdownT -= dt;
-    if (S.countdownT <= 0) { S.state = "playing"; LIVE_ACC.acc = 0; hideCountdown(); }
+    if (S.countdownT <= 0) { S.state = "playing"; LIVE_ACC.acc = 0; hideCountdown(); AudioFX.countdown({ n: 0 }); }
     else showCountdownNum(Math.ceil(S.countdownT));
     return;
   }
@@ -2299,6 +2752,7 @@ function stepPlaying(dt) {
   for (const ob of S.pipes) {
     if (ob.fam === "wind" && S.bird.x > ob.x && S.bird.x < ob.x + ob.w) windA += ob.accel;
   }
+  if (window.THERMALS_ON && S.mode === "sky") windA += window.Director.thermalA(S); // round 3 idea 1: Sky thermal bands (same sum ⇒ Sim = live)
 
   // 3) fågel
   S.bird.vy = Math.min(S.bird.vy + (TUNE.gravity + windA) * dt, TUNE.maxFallSpeed);
@@ -2327,13 +2781,14 @@ function stepPlaying(dt) {
         AudioFX.score();
         sparkle(S.bird.x + 30, S.bird.y - 20);
         S.popups.push({ x: ob.x + ob.w / 2, y: ob.gapY - ob.gap / 2 - 14, t: 0, txt: "+1" });
-        Econ.awardPipe(); // Gate D: även endless ger fjädrar (samma takt, ingen bonus)
+        if (S.runMode !== "scout") Econ.awardPipe(); // Gate D: även endless ger fjädrar; E9: träning ger inga
         if (S.runMode === "endless" && S.score > 0 && S.score % 25 === 0) {
           S.popups.push({ x: S.W / 2, y: S.H * 0.3, t: 0, txt: S.score + "!" });
           AudioFX.milestone();
         }
       }
       if (S.runMode === "endless") { refreshEndless(); if (!S.simMode) updateHUD(); }
+      else if (S.runMode === "scout" && S.score >= c.target) { Scout.finish(); return; } // E9: practice — no clear/rewards
       else if (!S.overdrive && S.score >= c.target) { levelClear(); return; }
     }
   }
@@ -2342,10 +2797,12 @@ function stepPlaying(dt) {
   // 6) kollision (förlåtande hitbox; varje familj definierar sin egen)
   const br = 11;
   const groundY = S.H - S.groundH;
+  if (S.runMode === "scout") { Scout.collide(br, groundY); return; } // E9: non-lethal practice
   if (S.bird.y + br >= groundY) { S.bird.y = groundY - br; gameOver(true); return; }
   for (const ob of S.pipes) {
     if (window.OBSTACLES[ob.fam].collide(ob, S.bird.x, S.bird.y, br, S)) { gameOver(false); return; }
   }
+  if (!S.simMode) AudioFX.nearStep(br); // v2 audio near-miss (live only, after collisions ⇒ never on the death frame; not hashed)
   if (S.runMode === "daily") Daily.track(br); // near-miss marks for the share squares (render/share only)
 }
 
@@ -2410,9 +2867,10 @@ function render() {
     drawMountains(w, h);
     drawHills(w, h);
     drawTrees(w, h);
+    if (VFIX_R) drawCloudsFront(); // v0.9 vfix: front clouds now sit BEHIND the obstacles (never veil a pipe edge)
     drawScarfTrail();
     drawObstacles(w, h);
-    drawCloudsFront();
+    if (!VFIX_R) drawCloudsFront();
     drawGround(w, h);
     drawForeground(w, h);
   }
@@ -2504,8 +2962,11 @@ function drawSun(w, h) {
     ctx.beginPath(); ctx.arc(x + 9, y + 8, 5, 0, TAU); ctx.fill();
   }
 }
+/* v0.9 vfix (render-only, flag shared with Worlds.VFIX): one consistent wrap (drawCloud wraps modulo W+320). The old
+   `x - camX*f % 700` wrapped at 700 inside an 800 span ⇒ the clouds jumped ~100 px every 700/f px of travel. */
+const VFIX_R = !!(window.Worlds && window.Worlds.VFIX);
 function drawCloudsBehind() {
-  for (const cl of S.clouds) drawCloud(cl.x - S.camX * 0.08 % 700, cl.y, cl.s);
+  for (const cl of S.clouds) drawCloud(VFIX_R ? cl.x - S.camX * 0.08 : cl.x - S.camX * 0.08 % 700, cl.y, cl.s);
 }
 function drawCloud(x, y, s) {
   x = ((x % (S.W + 320)) + S.W + 320) % (S.W + 320) - 160;
@@ -2557,7 +3018,7 @@ function drawDistantBirds(w) {
   ctx.save();
   ctx.strokeStyle = "rgba(43,33,24,0.45)"; ctx.lineWidth = 2; ctx.lineCap = "round";
   for (let i = 0; i < 3; i++) {
-    const bx = ((hash(i * 13.7 + S.level) * (w + 400) - S.camX * 0.05 - S.time * 9) % (w + 400) + w + 400) % (w + 400) - 200;
+    const bx = ((hash(i * 13.7 + (VFIX_R ? 0 : S.level)) * (w + 400) - S.camX * 0.05 - S.time * 9) % (w + 400) + w + 400) % (w + 400) - 200;
     const by = 90 + hash(i * 7.3) * 130 + Math.sin(S.time * 0.9 + i * 2) * 8;
     const f = Math.sin(S.time * 7 + i * 2.1) * 4;
     ctx.beginPath();
@@ -2569,8 +3030,8 @@ function drawDistantBirds(w) {
 }
 function drawCloudsFront() {
   ctx.save();
-  ctx.globalAlpha = 0.38;
-  for (const cl of S.cloudsFront) drawCloud(cl.x - S.camX * 0.2 % 700, cl.y, cl.s);
+  ctx.globalAlpha = VFIX_R ? 0.24 : 0.38;
+  for (const cl of S.cloudsFront) drawCloud(VFIX_R ? cl.x - S.camX * 0.2 : cl.x - S.camX * 0.2 % 700, cl.y, cl.s);
   ctx.restore();
 }
 function ridge(baseY, amp, f1, f2, off, col) {
@@ -2782,11 +3243,48 @@ function drawPipeCap(x, y, isTop) {
     ctx.fillRect(isTop ? cx + 2 : cx + 2, isTop ? y + 2 : y + 2, wdt - 4, 3);
   }
 }
+/* Round 3 idea 1 – Sky thermal bands: drawn UNDER the gates, low alpha, shape-coded (chevrons ▲ lift / ▼ sink +
+   a solid edge on the side the air pushes towards), never only colour. Static bands; in reduced motion the
+   chevrons do not scroll. Render only — physics reads ob.th in Director.thermalA. */
+function drawThermals() {
+  const rm = reducedMotion(), t = S.time || 0;
+  for (const ob of S.pipes) {
+    if (!ob.th) continue;
+    for (const b of ob.th) {
+      const x0 = ob.x + b.x0, x1 = ob.x + b.x1, lift = b.a < 0, h = b.y1 - b.y0;
+      if (x1 < -10 || x0 > S.W + 10) continue;
+      ctx.save();
+      ctx.fillStyle = lift ? "rgba(96,236,196,0.26)" : "rgba(255,170,72,0.27)";
+      ctx.fillRect(x0, b.y0, x1 - x0, h);
+      // solid edge on the side the air pushes towards (top for lift, bottom for sink)
+      ctx.strokeStyle = "rgba(20,30,50,0.28)"; ctx.lineWidth = 1.5; ctx.strokeRect(x0, b.y0, x1 - x0, h); // contrast on light worlds
+      ctx.strokeStyle = lift ? "rgba(120,255,214,0.95)" : "rgba(255,186,96,0.95)";
+      ctx.lineWidth = 4;
+      ctx.beginPath(); const ey = lift ? b.y0 : b.y1; ctx.moveTo(x0, ey); ctx.lineTo(x1, ey); ctx.stroke();
+      // chevrons ▲/▼ in one batched path (cheap on slow phones); scroll in the push direction unless reduced motion
+      ctx.beginPath(); ctx.rect(x0, b.y0, x1 - x0, h); ctx.clip();
+      ctx.strokeStyle = lift ? "rgba(225,255,245,0.85)" : "rgba(255,238,205,0.85)";
+      ctx.lineWidth = 3; ctx.lineJoin = "round";
+      const step = 34, off = rm ? 0 : ((t * 22) % step) * (lift ? -1 : 1);
+      ctx.beginPath();
+      for (let cx = x0 + 22; cx < x1 - 8; cx += 46) {
+        for (let cy = b.y0 + 16 + off - step; cy < b.y1 + step; cy += step) {
+          if (lift) { ctx.moveTo(cx - 8, cy + 5); ctx.lineTo(cx, cy - 4); ctx.lineTo(cx + 8, cy + 5); }
+          else { ctx.moveTo(cx - 8, cy - 5); ctx.lineTo(cx, cy + 4); ctx.lineTo(cx + 8, cy - 5); }
+        }
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+}
 function drawObstacles(w, h) {
+  if (S.mode === "sky" && S.pipes.some(o => o.th)) drawThermals();
   for (const ob of S.pipes) {
     const fam = window.OBSTACLES[ob.fam] || window.OBSTACLES.classic;
     fam.draw(ctx, ob, S);
   }
+  if (S.runMode === "scout" && S.state === "playing") Scout.draw(ctx); // E9 telegraph (practice only)
 }
 /* Delade rit-hjälpmedel för hindermodulerna (sätts efter definitionerna). */
 function roundRect(x, y, wdt, hgt, r) {
@@ -2951,7 +3449,7 @@ function drawAmbientFront(w, h) {
       ctx.globalAlpha = 0.5 + 0.3 * Math.sin(S.time * 3 + a.ph); ctx.fillStyle = "#fffbe0";
       ctx.beginPath(); ctx.arc(a.x, a.y, a.s * 0.8, 0, TAU); ctx.fill();
     } else if (k === "fireflies" || k === "sparkle") {
-      const tw = 0.4 + 0.6 * Math.abs(Math.sin(S.time * 2.4 + a.ph));
+      const tw = VFIX_R && reducedMotion() ? 0.75 : 0.4 + 0.6 * Math.abs(Math.sin(S.time * 2.4 + a.ph));
       const glowCol = k === "sparkle" ? "#aef6ff" : "#ffe27a";
       ctx.globalAlpha = tw * 0.35; ctx.fillStyle = glowCol; // skiktad glöd, ingen shadowBlur
       ctx.beginPath(); ctx.arc(a.x, a.y, a.s * 2.2, 0, TAU); ctx.fill();
@@ -3316,7 +3814,7 @@ const Sim = {
     const obs = S.pipes.map(o => [o.fam, r2(o.x), r2(o.gapY), r2(o.gap),
       r2(o.baseY == null ? -1 : o.baseY), r2(o.t), o.passed ? 1 : 0,
       r2(o.amp || 0), r2(o.warn || 0), r2(o.toff || 0), o.state || "-",
-      r2(o.by == null ? -9999 : o.by)].join(",")).join("|");
+      r2(o.by == null ? -9999 : o.by)].concat(o.th ? ["th" + o.th.map(b => b.x0 + "/" + b.x1 + "/" + b.y0 + "/" + b.y1 + "/" + b.a).join(":")] : []).join(",")).join("|"); // Sky thermals only when present
     const s = [r2(S.bird.x), r2(S.bird.y), r2(S.bird.vy), S.score, r2(S.camX),
       r2(S.ptime), S.spawnCount, S.prevGapY == null ? -1 : r2(S.prevGapY)].join(";") + "#" + obs;
     let h = 2166136261;
@@ -3341,6 +3839,7 @@ function loop(ts) {
   if (dt <= 0) return;
   if (S.state !== "paused") update(dt);
   render();
+  try { AudioFX.frame(); } catch (e) {} // v2: music state + warning cues (glide pack only)
   perfGovernor(ts);
 }
 /* A9: adaptiv upplösning. Mäter verkliga bildrutor under spel; om medianen över ~2 s (120 bildrutor eller 2 s) ligger över
@@ -3431,6 +3930,9 @@ function syncSettingsUI() {
     if (ms) { try { ms.value = String(Math.round(AudioFX.musicVol * 100)); } catch (e) {} }
     // music row only when the active sound pack has music (legacy pack: none; draft pack: behind ?audio=v1-draft)
     const mr = $("musicRow"); if (mr) mr.hidden = !AudioFX.hasMusic();
+    const mss = $("masterSlider"); if (mss) mss.value = String(Math.round(AudioFX.masterVol * 100));
+    const lab = $("audioLabRow"); if (lab) lab.hidden = !SoundTest.available();
+    const pb = $("audioPackBtn"); if (pb) pb.textContent = I18N.t(AudioFX.isGlide() ? "audio_pack_glide" : "audio_pack_legacy");
   } catch (e) {}
 }
 function toggleMotion() {
@@ -3454,6 +3956,7 @@ function showCoachTip(level) {
     if (window.__DW_SIM || S.simMode) return;
     const seen = (window.SaveV2 && SaveV2.get("seenTips")) || {};
     const fresh = familiesIntroducedAt(level).filter(id => !seen[id]);
+    if (window.thermalsActive && thermalsActive(S) && !seen.thermal) fresh.unshift("thermal"); // round 3 idea 1
     if (!fresh.length) return;
     const id = fresh[0];
     const el = $("coachTip");
@@ -3536,6 +4039,7 @@ function boot() {
   } catch (e) {}
   try { if (window.SaveV2) AudioFX.setVolume(SaveV2.get("soundVol") != null ? SaveV2.get("soundVol") : 1); } catch (e) {}
   try { const mv = window.SaveV2 ? Number(SaveV2.get("musicVol")) : NaN; AudioFX.setMusicVolume(Number.isFinite(mv) ? mv : 0.5); } catch (e) {}
+  try { const xv = window.SaveV2 ? SaveV2.get("masterVol") : null; AudioFX.setMasterVolume(xv != null && Number.isFinite(Number(xv)) ? Number(xv) : 1); } catch (e) {}
   applyMotionClass();
   try { validateProgressMapping(); } catch (e) {}
   try { if (window.SaveV2) S.birdSkin = Econ.skin(); } catch (e) {} // Phase 1A: utrustad fågel

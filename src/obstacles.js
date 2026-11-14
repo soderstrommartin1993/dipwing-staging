@@ -35,6 +35,30 @@ const WEAVE_ON = (function () {
     return !((window.SafeStorage ? SafeStorage.get("pfb_weave") : (window.localStorage && localStorage.getItem("pfb_weave"))) === "0"); } catch (e) { return true; }
 })();
 if (WEAVE_ON) INTRO.weave = 7;
+/* Round 3 idea 1 – SKY THERMALS (feature flag, default ON): ?thermals=0 or localStorage pfb_thermals="0" ⇒ Sky is
+   Classic again, exactly (no band is generated ⇒ no extra RNG call ⇒ same sequence and fingerprint).
+   Only in Sky, never in Classic and never on the daily course (runMode "daily"). See docs/SKY_THERMALS.md. */
+const THERMALS_ON = (function () {
+  try { const q = new URLSearchParams(location.search).get("thermals"); if (q === "0") return false; if (q === "1") return true;
+    return !((window.SafeStorage ? SafeStorage.get("pfb_thermals") : (window.localStorage && localStorage.getItem("pfb_thermals"))) === "0"); } catch (e) { return true; }
+})();
+function thermalsActive(S) { return THERMALS_ON && S.mode === "sky" && S.runMode !== "daily"; }
+/* v0.9 phase 1 – WIND RULES (feature flag `windRules`; default ON only on the staging channel, OFF in prod/dev/test/
+   Perchance until Martin approves): at difficulty 8–10 (adventure L8–10 and Endless diff 8–10, never on the daily
+   course) at most ONE air mechanism at a time —
+     · no twin pair, Weaver or timing gate directly before or after a wind tunnel;
+     · no thermal band on the 2 gates after a wind tunnel (a band before the tunnel is always behind the bird by the
+       time the tunnel is reached ⇒ never two air forces ahead of the bird at once);
+     · back-to-back tunnels always blow the SAME way.
+   Plus one visual language for air (tunnels use the thermal colours: mint ▲ lift / amber ▼ push) and a legend card
+   (ready screen + pause, L8–10). Flag off ⇒ none of this code runs ⇒ identical RNG sequence and fingerprint. */
+const WIND_RULES_ON = (function () {
+  try { const q = new URLSearchParams(location.search).get("windRules"); if (q === "0") return false; if (q === "1") return true;
+    const ls = window.SafeStorage ? SafeStorage.get("pfb_windRules") : (window.localStorage && localStorage.getItem("pfb_windRules"));
+    if (ls === "0") return false; if (ls === "1") return true;
+    return !!(window.GAME_BUILD && window.GAME_BUILD.channel === "staging"); } catch (e) { return false; }
+})();
+function windRulesActive(S) { const d = difflv(S); return WIND_RULES_ON && S.runMode !== "daily" && d >= 8 && d <= 10; }
 
 /* ---------- familjevikter per nivå (Director) ---------- */
 function weightsFor(level) {
@@ -142,8 +166,9 @@ const OBSTACLES = {
     name: NAMES.drift, intro: INTRO.drift, timing: false, w: 78,
     spawn(R, S, x, gapY) {
       const lv = difflv(S);
-      const amp = lv >= 11 ? Math.min(110, 30 + (lv - 11) * 9)
+      let amp = lv >= 11 ? Math.min(110, 30 + (lv - 11) * 9)
                            : 12 + Math.max(0, lv - 4) * 5;
+      if (S.cfg.driftMul) amp = Math.round(amp * S.cfg.driftMul); // round 3 late curve: breath levels
       return { fam: "drift", x, w: 78, baseY: gapY, gapY, gap: S.cfg.gap,
         passed: false, ph: R.range(0, TAU), t: 0,
         amp, spd: Math.min(1.6, 0.9 + lv * 0.03) };
@@ -283,7 +308,7 @@ const OBSTACLES = {
         c.restore();
       }
       // strömmar (mörk underlag + mättad färg = läsbart mot alla himlar)
-      const streamCol = ob.dir < 0 ? "#3fa9e0" : "#ef7d23";
+      const streamCol = WIND_RULES_ON ? (ob.dir < 0 ? "#3fd9a8" : "#f2a33a") : (ob.dir < 0 ? "#3fa9e0" : "#ef7d23"); // windRules: thermal colours (mint lift / amber push)
       c.save();
       c.lineCap = "round";
       const n = 5;
@@ -717,6 +742,7 @@ const Director = {
   // A5: lodrät räckvidd. Med tätare hinder måste höjdskillnaden mellan två öppningar (inkl. glidande
   // öppningars utslag) gå att hinna med: CLIMB px/s ≈ stadig stigning vid ~5 tryck/s.
   CLIMB: 280,
+  BREATH_GAP: 18, // round 3 late curve: extra gap on a breath gate
   driftAmpCap(dtMin) { return Math.max(12, Math.round(this.CLIMB * dtMin * 0.25)); },
 
   // Övre gräns för avstånd (ren funktion). A5: används INTE längre som spawn-tröskel
@@ -737,12 +763,19 @@ const Director = {
     const lastX = last ? last.x : S.W + 100;
     const lastFam = S.spawnLastFam || null;
     const idx = S.spawnCount || 0;
+    const prevY0 = S.prevGapY; // thermals: where the bird is coming from
 
     // 1) välj familj (tajming aldrig intill tajming)
     const dlv = difflv(S);
+    const wr = windRulesActive(S);
     let pool = this.weightsFor(dlv).filter(e => {
       if (!this.unlocked(dlv).includes(e.id)) return false;
       const mod = OBSTACLES[e.id];
+      if (wr) { // windRules: one air mechanism at a time (see WIND_RULES_ON)
+        const timed = (id) => !!id && (id === "pulse" || !!(OBSTACLES[id] && OBSTACLES[id].timing)); // pulse = timed gate too
+        if (lastFam === "wind" && (timed(e.id) || e.id === "weave")) return false;
+        if (e.id === "wind" && (timed(lastFam) || lastFam === "weave" || (last && last.twin))) return false;
+      }
       if (mod.timing && lastFam && OBSTACLES[lastFam] && OBSTACLES[lastFam].timing) return false;
       // Vävaren: aldrig tajminghinder intill (före eller efter) — andra kolumnen kräver full uppmärksamhet
       if (mod.timing && lastFam === "weave") return false;
@@ -750,8 +783,12 @@ const Director = {
       return true;
     });
     if (!pool.length) pool = [{ id: "classic", w: 1 }];
+    if (cfg.timingW) pool = pool.map(e => OBSTACLES[e.id].timing ? { id: e.id, w: e.w * cfg.timingW } : e); // late curve: breath levels
     let fam = pickWeighted(R, pool);
     if (dlv === 1 || idx === 0) fam = "classic"; // rättvis start, alltid
+    // round 3 late curve: every Nth gate is a wider classic "breath gate" (RNG pick above is still consumed)
+    const breath = !!cfg.breathEvery && idx >= cfg.breathEvery && idx % cfg.breathEvery === cfg.breathEvery - 1;
+    if (breath) fam = "classic";
 
     // 2) avstånd (reaktionstid i sekunder, aldrig under minimum)
     // Gate A: rampen ökar farten mitt i nivån — räkna med MAXIMAL
@@ -777,7 +814,7 @@ const Director = {
     const thisAmp = fam === "drift" ? ampCap : 0;
     const jumpCap = Math.max(40, this.CLIMB * dtMin - prevAmp - thisAmp);
     const famMinGap = fam === "blade" ? 245 : fam === "pendulum" ? 235 :
-      fam === "laser" ? 210 : fam === "rock" ? 190 : cfg.gap;
+      fam === "laser" ? 210 : fam === "rock" ? 190 : cfg.gap + (breath ? this.BREATH_GAP : 0);
     const wres = walkGapY(R, S, S.prevGapY, famMinGap, jumpCap);
 
     // 4) bygg hindret + validera
@@ -788,17 +825,24 @@ const Director = {
     };
     if (fam === "weave") {
       const w = this.weavePair(R, S, x, wres, speed, jumpCap, dlv);
-      if (w) { for (const ob of w) S.pipes.push(ob); S.prevGapY = w[1].gapY; S.spawnLastFam = fam; S.spawnCount = idx + 1; return w; }
+      if (w) {
+        if (thermalsActive(S)) this.thermalFor(R, S, w[0], last, prevY0, jumpCap, dlv, fam);
+        for (const ob of w) S.pipes.push(ob); S.prevGapY = w[1].gapY; S.spawnLastFam = fam; S.spawnCount = idx + 1; return w;
+      }
       fam = "classic"; // banan för smal för en rättvis S ⇒ en vanlig port på samma plats
     }
     const out = [mk(x, wres.y)];
+    if (wr && fam === "wind" && last && last.fam === "wind" && out[0].dir !== last.dir) { // windRules: same direction back-to-back
+      out[0].dir = last.dir; out[0].accel = Math.abs(out[0].accel) * last.dir;
+    }
+    if (breath) { out[0].gap += this.BREATH_GAP; out[0].breath = true; }
     S.prevGapY = wres.y;
 
     // 5) tvillingformation (klassisk L2+): två snabba rör = 2 poäng.
     // Gate A: tvillingen valideras självständigt och får ett eget
     // minimiavstånd (effektiv fart × 0.55 s) så paret aldrig blir omöjligt.
     // A7 (P1-4): villkoret `dlv <= 10` gjorde cfg.twinCh för L11+ till död kod — nu styr cfg.twinCh.
-    if (fam === "classic" && dlv >= 2 && R.chance(cfg.twinCh != null ? cfg.twinCh : 0.22)) {
+    if (fam === "classic" && !breath && dlv >= 2 && R.chance(cfg.twinCh != null ? cfg.twinCh : 0.22) && !(wr && lastFam === "wind")) {
       const twinDx = Math.max(150, Math.round(speed * 0.55));
       const y2 = clamp(wres.y + R.range(-70, 70), wres.lo, wres.hi);
       const ob2 = OBSTACLES.classic.spawn(R, S, x + twinDx, y2);
@@ -807,10 +851,66 @@ const Director = {
       S.prevGapY = ob2.gapY; // A7: nästa promenadsteg utgår från tvillingen (räckviddstaket gäller från den)
     }
 
+    if (thermalsActive(S)) this.thermalFor(R, S, out[0], last, prevY0, jumpCap, dlv, fam);
     for (const ob of out) S.pipes.push(ob);
     S.spawnLastFam = fam;
     S.spawnCount = idx + 1;
     return out;
+  },
+
+  /* Round 3 idea 1 – one thermal band in the open air BEFORE gate `a` (between the previous gate's right edge and a.x),
+     placed across the line the bird flies from the previous opening to this one, so it changes the flap rhythm:
+     ▲ lift = you fall slower (flap less), ▼ sink = you fall faster (flap more). Flap velocity is absolute, so a
+     band never stops a flap from working. Data lives on the obstacle (a.th = [{x0,x1,y0,y1,a}], x relative to a.x)
+     ⇒ Sim snapshots, replays and the planner see exactly what live play sees; the force is summed into windA in
+     stepPlaying (Sim = live).
+     E's conditions: static bands (never move or switch ⇒ stricter than "freeze 0.7 s before a gate"); the band ends
+     ≥ max(40 px, 0.25 s) before the next gate and starts 24 px after the previous one, so no force ever acts inside a
+     gate or on its opening; |a| ≤ 0.22 g (< g ⇒ a lift only slows the fall, you can never rise without flapping);
+     L1–3 weak lift only (0.10 g); no lift above y 120 (ceiling clamp); no sink within 90 px of the ground; sink only
+     before a still gate (classic/Weaver) and only when the climb to it is ≤ 0.5 × the CLIMB×dt cap; half-strength
+     lift before moving/timed gates (drift, pulse, pendulum, rock, laser, blade); none next to wind tunnels, inside twin pairs or between
+     the Weaver's two columns. */
+  THERMAL: { MAXG: 0.22, MIN_SEG: 150, AFTER: 24, BEFORE_S: 0.25, CEIL_TOP: 120, GROUND_PAD: 90 },
+  // calibrated with tools/difficulty/sky-sweep.mjs so Sky D12 holds the Classic floor (L18+ is where D12 is already strained)
+  thermalMag(dlv) { return dlv <= 3 ? 0.10 : dlv <= 7 ? 0.15 : dlv <= 17 ? 0.17 : 0.14; },
+  thermalSinkP(dlv) { return dlv <= 3 ? 0 : dlv <= 7 ? 0.4 : dlv <= 17 ? 0.5 : 0.35; },
+  thermalFor(R, S, a, last, prevY, jumpCap, dlv, fam) {
+    if (!last || !a) return;
+    const T = this.THERMAL, speed = S.cfg.speed * (1 + (S.cfg.ramp || 0));
+    const xa = last.x + last.w + T.AFTER, xb = a.x - Math.max(40, speed * T.BEFORE_S);
+    if (a.x - (last.x + last.w) < T.MIN_SEG || xb - xa < 80 || fam === "wind" || last.fam === "wind") return;
+    if (windRulesActive(S) && S.pipes.slice(-2).some(o => o.fam === "wind")) return; // windRules: no band within 2 gates of a tunnel
+    const groundY = S.H - S.groundH, yn = a.fam === "drift" && a.baseY != null ? a.baseY : a.gapY;
+    const yp = prevY == null ? yn : prevY, climb = yp - yn; // > 0 ⇒ the bird has to climb to reach this gate
+    const still = a.fam === "classic" || a.fam === "weave";
+    const A = Math.round(1500 * this.thermalMag(dlv) * (still ? 1 : 0.5)); // calibration: half force before a moving/timed gate
+    const mid = (yp + yn) / 2 + R.range(-30, 30), h = Math.min(240, R.range(110, 170) + Math.abs(yp - yn) * 0.5);
+    let y0 = Math.round(mid - h / 2), y1 = Math.round(mid + h / 2);
+    let sink = R.chance(this.thermalSinkP(dlv));
+    // calibration (Sky D12 must hold the Classic floor): sink only before a still gate and only for an easy climb
+    if (sink && (climb > jumpCap * 0.5 || !still)) sink = false;
+    const x0 = Math.round(xa + R.range(0, 0.15) * (xb - xa) - a.x), x1 = Math.round(xb - a.x);
+    a.th = this.validateThermals([{ x0, x1, y0, y1, a: sink ? A : -A }], groundY);
+    if (!a.th.length) delete a.th;
+  },
+  validateThermals(bands, groundY) {
+    const T = this.THERMAL, maxA = Math.round(1500 * T.MAXG);
+    return bands.filter(b => {
+      b.a = Math.max(-maxA, Math.min(maxA, b.a));
+      if (b.a < 0) b.y0 = Math.max(T.CEIL_TOP, b.y0); else b.y0 = Math.max(20, b.y0);
+      b.y1 = Math.min(b.a > 0 ? groundY - T.GROUND_PAD : groundY - 4, b.y1);
+      return b.y1 - b.y0 >= 60 && b.x1 - b.x0 >= 60;
+    });
+  },
+  // force on the bird from thermal bands (called from stepPlaying, Sim and live alike)
+  thermalA(S) {
+    let A = 0; const bx = S.bird.x, by = S.bird.y;
+    for (const ob of S.pipes) {
+      if (!ob.th) continue;
+      for (const b of ob.th) if (bx >= ob.x + b.x0 && bx <= ob.x + b.x1 && by >= b.y0 && by <= b.y1) A += b.a;
+    }
+    return A;
   },
 
   /* Vävaren-paret (E:s villkor):
@@ -917,4 +1017,8 @@ window.Director = Director;
 window.OBSTACLE_INTRO = INTRO;
 window.OBSTACLE_NAMES = NAMES;
 window.WEAVE_ON = WEAVE_ON;
+window.THERMALS_ON = THERMALS_ON;
+window.WIND_RULES_ON = WIND_RULES_ON;
+Director.windRulesActive = windRulesActive;
+window.thermalsActive = thermalsActive;
 })();

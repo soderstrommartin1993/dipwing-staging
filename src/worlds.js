@@ -21,6 +21,17 @@
 /* Egna helpers (skript-scope delas inte mellan filer — game.js
    clamp/lerp/hash/TAU är inte synliga här). */
 const TAU = Math.PI * 2;
+/* v0.9 phase 1 – VFIX (render-only, flag default ON; ?vfix=0 or localStorage pfb_vfix="0" = v0.8 drawing exactly):
+   world-anchored city windows with slow breathing light instead of per-frame re-hashing (was ~16 toggles/s = strobe),
+   smooth mast pulse, butterflies/eagles wrapped (no sawtooth jumps), reduced motion freezes ambient scenery animation. */
+const VFIX = (function () { try { const q = new URLSearchParams(location.search).get("vfix"); if (q === "0") return false; if (q === "1") return true;
+  return !(((window.SafeStorage ? SafeStorage.get("pfb_vfix") : localStorage.getItem("pfb_vfix"))) === "0"); } catch (e) { return true; } })();
+/* butterflies (forest) and eagles (valley): x on screen. Old form `… - camX*f % P` jumped P px every P/f px of travel. */
+function flyX(f, S, w) { return VFIX ? wrapX(f.cx + 200 + Math.sin(S.time * f.sp + f.ph) * f.ax, S.camX, 0.3, w) : f.cx + Math.sin(S.time * f.sp + f.ph) * f.ax - S.camX * 0.3 % 60; }
+function eagleX(e, S, w) { return VFIX ? wrapX(e.cx + 200 + Math.sin(S.time * e.sp + e.ph) * e.ax, S.camX, 0.1, w) : e.cx + Math.sin(S.time * e.sp + e.ph) * e.ax - S.camX * 0.1 % 80; }
+function rmOn() { try { return !!(window.DW_reducedMotion && window.DW_reducedMotion()); } catch (e) { return false; } }
+/* reduced motion: scenery sees a frozen clock (camera parallax still follows the game) */
+function sceneS(S) { if (!VFIX || !rmOn()) return S; const f = Object.create(S); f.time = 0; return f; }
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 function lerp(a, b, t) { return a + (b - a) * t; }
 function hash(n) { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); }
@@ -732,7 +743,7 @@ function envValley(c, S, w, h) {
   // örnar mellan topparna
   c.strokeStyle = "rgba(43,33,24,0.55)"; c.lineWidth = 2.5; c.lineCap = "round";
   for (const e of L.eagles) {
-    const ex = e.cx + Math.sin(S.time * e.sp + e.ph) * e.ax - S.camX * 0.1 % 80;
+    const ex = eagleX(e, S, w);
     const ey = e.cy + Math.cos(S.time * e.sp * 1.3 + e.ph) * 20;
     const f = Math.sin(S.time * 6 + e.ph) * 5;
     c.beginPath();
@@ -842,6 +853,7 @@ function drawEnv(id, c, S, w, h) {
 }
 
 function drawBackground(c, S, w, h) {
+  S = sceneS(S);
   const cur = S.envId, prev = S.prevEnvId, b = S.envBlend;
   if (prev && prev !== cur && b < 1 && isPremium(prev)) {
     drawEnv(prev, c, S, w, h); // mjuk övertoning mellan världar
@@ -989,7 +1001,7 @@ function envForest(c, S, w, h) {
     c.restore();
   }
   for (const f of L.flies) {
-    const x = f.cx + Math.sin(S.time * f.sp + f.ph) * f.ax - S.camX * 0.3 % 60;
+    const x = flyX(f, S, w);
     const y = f.cy + Math.cos(S.time * f.sp * 1.3 + f.ph) * f.ay;
     const flap = Math.abs(Math.sin(S.time * 16 + f.ph)) * 0.9 + 0.1;
     c.save(); c.translate(x, y);
@@ -1031,7 +1043,8 @@ function envCity(c, S, w, h) {
   c.fillStyle = "rgba(200,180,160,0.5)";
   c.beginPath(); c.arc(mx - 8, my - 4, 5, 0, TAU); c.arc(mx + 7, my + 6, 3.5, 0, TAU); c.fill();
   // 2) bortre skyline (fönster som tänds, blinkande master)
-  for (const b of L.far) {
+  for (let bi = 0; bi < L.far.length; bi++) {
+    const b = L.far[bi];
     const x = wrapX(b.x, S.camX, 0.05, w);
     if (x < -140 || x > w + 140) continue;
     const top = gy - 40 - b.hgt;
@@ -1040,9 +1053,9 @@ function envCity(c, S, w, h) {
     // fönsterraster (var 3:e rad tänds deterministiskt)
     for (let wy = top + 10; wy < gy - 50; wy += 14) {
       for (let wx = x + 6; wx < x + b.wdt - 6; wx += 12) {
-        const lit = h1(Math.round(wx * 3 + wy * 7), 3);
+        const lit = VFIX ? h1(bi * 131 + Math.round((wx - x) / 12) * 17 + Math.round((wy - top) / 14) * 7, 3) : h1(Math.round(wx * 3 + wy * 7), 3);
         if (lit < 0.4) {
-          const flick = lit < 0.06 ? (0.4 + 0.6 * Math.abs(Math.sin(S.time * 3 + wx))) : 1;
+          const flick = lit < 0.06 ? (VFIX ? 0.78 + 0.22 * Math.sin(S.time * 0.7 + lit * 400) : (0.4 + 0.6 * Math.abs(Math.sin(S.time * 3 + wx)))) : 1;
           c.globalAlpha = flick;
           c.fillStyle = lit < 0.2 ? "#9be8ff" : "#ffd97a";
           c.fillRect(wx, wy, 5, 7);
@@ -1052,8 +1065,13 @@ function envCity(c, S, w, h) {
     c.globalAlpha = 1;
     // blinkande mast
     if (b.wins > 0.6) {
-      const on = Math.sin(S.time * 2.4 + x) > 0;
-      glowDot(c, x + b.wdt / 2, top - 6, 3, on ? "#ff5b5b" : "#7a2020", on ? "#fff" : "#7a2020", 1);
+      if (VFIX) { // slow smooth pulse (~0.2 Hz), world-anchored phase
+        const k = 0.5 + 0.5 * Math.sin(S.time * 1.2 + bi * 1.7);
+        glowDot(c, x + b.wdt / 2, top - 6, 3, "#ff5b5b", "#ffd0d0", 0.45 + 0.5 * k);
+      } else {
+        const on = Math.sin(S.time * 2.4 + x) > 0;
+        glowDot(c, x + b.wdt / 2, top - 6, 3, on ? "#ff5b5b" : "#7a2020", on ? "#fff" : "#7a2020", 1);
+      }
     }
   }
   // moln mellan husen
@@ -1068,7 +1086,8 @@ function envCity(c, S, w, h) {
     c.fill();
   }
   // 3) närmre torn (neonkanter, billboards)
-  for (const b of L.back) {
+  for (let bi = 0; bi < L.back.length; bi++) {
+    const b = L.back[bi];
     const x = wrapX(b.x, S.camX, 0.12, w);
     if (x < -160 || x > w + 160) continue;
     const top = gy - 60 - b.hgt;
@@ -1088,9 +1107,9 @@ function envCity(c, S, w, h) {
     // fönster (glesare = billigare)
     for (let wy = top + 14; wy < gy - 70; wy += 22) {
       for (let wx = x + 8; wx < x + b.wdt - 8; wx += 20) {
-        const lit = h1(Math.round(wx * 3 + wy * 7), 9);
+        const lit = VFIX ? h1(bi * 173 + Math.round((wx - x) / 20) * 19 + Math.round((wy - top) / 22) * 5, 9) : h1(Math.round(wx * 3 + wy * 7), 9);
         if (lit < 0.42) {
-          c.globalAlpha = lit < 0.05 ? (0.4 + 0.6 * Math.abs(Math.sin(S.time * 3 + wx))) : 0.95;
+          c.globalAlpha = lit < 0.05 ? (VFIX ? 0.72 + 0.23 * Math.sin(S.time * 0.6 + lit * 900) : (0.4 + 0.6 * Math.abs(Math.sin(S.time * 3 + wx)))) : 0.95;
           c.fillStyle = lit < 0.2 ? "#9be8ff" : "#ffd97a";
           c.fillRect(wx, wy, 8, 11);
         }
@@ -1133,8 +1152,13 @@ function envCity(c, S, w, h) {
       c.lineTo(x + rw / 2, gy - 60 - rh - 38); c.closePath(); c.fill();
     } else {
       c.fillRect(x + rw / 2 - 1, gy - 60 - rh - 30, 2, 30);
-      const on = Math.sin(S.time * 2 + x) > 0;
-      glowDot(c, x + rw / 2, gy - 60 - rh - 32, 2.4, on ? "#ff5b5b" : "#5a1515", on ? "#fff" : "#5a1515", 1);
+      if (VFIX) { // was sin(time*2 + x) with x scrolling ⇒ ~8 Hz blinking; now a slow world-anchored pulse
+        const k = 0.5 + 0.5 * Math.sin(S.time * 1.3 + i * 2.1);
+        glowDot(c, x + rw / 2, gy - 60 - rh - 32, 2.4, "#ff5b5b", "#ffd0d0", 0.4 + 0.5 * k);
+      } else {
+        const on = Math.sin(S.time * 2 + x) > 0;
+        glowDot(c, x + rw / 2, gy - 60 - rh - 32, 2.4, on ? "#ff5b5b" : "#5a1515", on ? "#fff" : "#5a1515", 1);
+      }
     }
   }
   // bro + tåg (periodiskt, deterministiskt)
@@ -1162,7 +1186,8 @@ function envCity(c, S, w, h) {
     c.fillStyle = "rgba(10,8,20,0.9)";
     c.beginPath(); c.ellipse(px, py, 26, 6, 0, 0, TAU); c.fill();
     c.fillRect(px - 4, py - 14, 8, 14);
-    if (Math.sin(S.time * 9) > 0) glowDot(c, px - 26, py, 2.4, "#fff", "#fff", 1);
+    if (VFIX) glowDot(c, px - 26, py, 2.4, "#fff", "#fff", 0.35 + 0.45 * (0.5 + 0.5 * Math.sin(S.time * 3)));
+    else if (Math.sin(S.time * 9) > 0) glowDot(c, px - 26, py, 2.4, "#fff", "#fff", 1);
   }
   const hcyc = 31, ht = (S.time + 13) % hcyc;
   if (ht < 7) {
@@ -1174,7 +1199,8 @@ function envCity(c, S, w, h) {
     c.beginPath();
     c.moveTo(hx + Math.cos(ra) * 22, hy - 8); c.lineTo(hx - Math.cos(ra) * 22, hy - 8);
     c.stroke();
-    if (Math.sin(S.time * 7) > 0) glowDot(c, hx, hy + 6, 2, "#ff5b5b", "#fff", 1);
+    if (VFIX) glowDot(c, hx, hy + 6, 2, "#ff5b5b", "#fff", 0.35 + 0.45 * (0.5 + 0.5 * Math.sin(S.time * 2.5)));
+    else if (Math.sin(S.time * 7) > 0) glowDot(c, hx, hy + 6, 2, "#ff5b5b", "#fff", 1);
   }
   // gatmark: asfalt med neonstreck
   groundStrip(c, S, w, h, "#23233a", "#12121f", "rgba(0,255,255,0.5)");
@@ -1294,7 +1320,8 @@ function envSpace(c, S, w, h) {
     const vx = -60 + (vt / 6) * (w + 200), vy = h * 0.18;
     c.fillStyle = "rgba(200,210,230,0.9)";
     c.beginPath(); c.moveTo(vx - 12, vy); c.lineTo(vx + 10, vy - 4); c.lineTo(vx + 10, vy + 4); c.closePath(); c.fill();
-    if (Math.sin(S.time * 10) > 0) glowDot(c, vx + 10, vy, 2, "#7df9ff", "#fff", 1);
+    if (VFIX) glowDot(c, vx + 10, vy, 2, "#7df9ff", "#fff", 0.35 + 0.45 * (0.5 + 0.5 * Math.sin(S.time * 3)));
+    else if (Math.sin(S.time * 10) > 0) glowDot(c, vx + 10, vy, 2, "#7df9ff", "#fff", 1);
   }
   const qcyc = 47, qt = (S.time + 20) % qcyc;
   if (qt < 9) {
@@ -1303,7 +1330,8 @@ function envSpace(c, S, w, h) {
     c.fillRect(qx - 8, qy - 8, 16, 16);
     c.fillStyle = "rgba(60,120,220,0.8)";
     c.fillRect(qx - 34, qy - 5, 26, 10); c.fillRect(qx + 8, qy - 5, 26, 10);
-    if (Math.sin(S.time * 6) > 0) glowDot(c, qx, qy - 10, 2, "#ff5b5b", "#fff", 1);
+    if (VFIX) glowDot(c, qx, qy - 10, 2, "#ff5b5b", "#fff", 0.35 + 0.45 * (0.5 + 0.5 * Math.sin(S.time * 2.4)));
+    else if (Math.sin(S.time * 6) > 0) glowDot(c, qx, qy - 10, 2, "#ff5b5b", "#fff", 1);
   }
   // energihorisont (tydlig "mark" i rymden)
   groundStrip(c, S, w, h, "#23234d", "#0a0a22", "rgba(125,249,255,0.55)");
@@ -1319,6 +1347,7 @@ function envSpace(c, S, w, h) {
    (täckning endast i ytterkanter + under marklinjen)
    ============================================================ */
 function drawForeground(c, S, w, h) {
+  S = sceneS(S);
   const id = S.envId;
   if (id === "forest-deep") {
     // mörka löv i överkantens hörn (långsam svaj)
@@ -1339,8 +1368,9 @@ function drawForeground(c, S, w, h) {
     c.fillStyle = "rgba(8,6,16,0.9)";
     const off = S.camX * 0.85 % 340;
     for (let x = -off; x < w + 60; x += 340) {
-      c.fillRect(x, -30, 26, h * 0.22);
-      c.fillRect(x + 260, h * 0.7, 30, h);
+      // vfix: keep the vignette out of the playable gap band (gap edges live between y≈110 and the ground)
+      c.fillRect(x, -30, 26, VFIX ? h * 0.12 + 30 : h * 0.22);
+      c.fillRect(x + 260, VFIX ? h - S.groundH : h * 0.7, 30, h);
     }
     c.fillStyle = "rgba(0,255,255,0.5)";
     const off2 = S.camX * 0.85 % 340;
@@ -1410,6 +1440,7 @@ function drawForeground(c, S, w, h) {
 const SKY_TOP = { "lagoon-paradise": "#3ec6e8", "glacier-aurora": "#0a1030", "rimewake": "#061a22", "valley-highlands": "#4fa8e8",
   "arcane-nebula": "#080418", "forest-deep": "#8fd4e8", "city-neon": "#060818", "space-deep": "#020208" };
 function skyTop(envId) { return SKY_TOP[envId] || null; }
-window.Worlds = { selectEnv, isPremium, drawBackground, drawForeground, VARIANTS, skyTop,
+window.Worlds = { selectEnv, isPremium, drawBackground, drawForeground, VARIANTS, skyTop, VFIX,
+  _probe: { layout, flyX, eagleX, wrapX },
   SHOWCASE, showcaseFor, showcaseLevel, thumbnail };
 })();

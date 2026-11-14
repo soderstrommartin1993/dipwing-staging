@@ -210,6 +210,8 @@ function validate(d) {
   out.muted = d.muted === true || d.muted === 1 || d.muted === "1";
   out.soundVol = Math.max(0, Math.min(1, Number(d.soundVol != null ? d.soundVol : 1)));
   if (!Number.isFinite(out.soundVol)) out.soundVol = 1;
+  /* audio v2: clamp optional volumes only when present (no new fields written ⇒ no migration) */
+  for (const vk of ["musicVol", "masterVol"]) if (d[vk] != null) { const x = Number(d[vk]); out[vk] = Number.isFinite(x) ? Math.max(0, Math.min(1, x)) : (vk === "musicVol" ? 0.5 : 1); }
   out.lang = (d.lang === "en" || d.lang === "sv") ? d.lang : "sv";
   out.reducedMotion = d.reducedMotion === true;
   out.seenTips = objMap(d.seenTips);

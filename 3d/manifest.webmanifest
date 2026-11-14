@@ -1,0 +1,25 @@
+{
+ "name": "Dipwing (3D PROTOTYPE, base 0.8.0-alpha.1)",
+ "short_name": "Dipwing 3D",
+ "id": "./",
+ "start_url": "./",
+ "scope": "./",
+ "display": "standalone",
+ "orientation": "portrait",
+ "background_color": "#0a0e20",
+ "theme_color": "#141b33",
+ "description": "3D prototype (test only). No payments, no ads.",
+ "icons": [
+  {
+   "src": "staging/icon-192.png",
+   "sizes": "192x192",
+   "type": "image/png"
+  },
+  {
+   "src": "staging/icon-512.png",
+   "sizes": "512x512",
+   "type": "image/png",
+   "purpose": "any maskable"
+  }
+ ]
+}

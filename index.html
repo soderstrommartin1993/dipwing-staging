@@ -514,12 +514,20 @@
       <div class="neon" data-i18n="settings_motion" style="margin-top:10px;">Rörelse</div>
       <button class="btn secondary" id="motionBtn">🎞️ Full</button>
       <div class="neon" data-i18n="settings_sound" style="margin-top:10px;">Ljud</div>
+      <div class="tiny" data-i18n="settings_master" style="margin-top:4px;">Huvudvolym</div>
+      <input type="range" id="masterSlider" min="0" max="100" value="100" step="5"
+        style="width:100%;margin-top:2px;accent-color:#2b2118;" aria-label="Huvudvolym" data-i18n-aria="master_aria">
+      <div class="tiny" data-i18n="settings_sfx" style="margin-top:4px;">Effekter</div>
       <input type="range" id="volSlider" min="0" max="100" value="100" step="5"
         style="width:100%;margin-top:6px;accent-color:#2e9e5b;" aria-label="Volym" data-i18n-aria="volume_aria">
       <div id="musicRow" hidden>
       <div class="neon" data-i18n="settings_music" style="margin-top:10px;">Music</div>
       <input type="range" id="musicSlider" min="0" max="100" value="50" step="5"
         style="width:100%;margin-top:6px;accent-color:#3B4CC0;" aria-label="Music volume" data-i18n-aria="music_aria">
+      </div>
+      <div id="audioLabRow" class="btnrow" style="margin-top:8px;" hidden>
+        <button class="btn secondary" id="audioPackBtn">🎵</button>
+        <button class="btn secondary" id="soundTestBtn" data-i18n="soundtest_btn">🎧 Ljudtest</button>
       </div>
       <div class="neon" data-i18n="settings_save" style="margin-top:10px;">Save data</div>
       <div class="tiny" data-i18n="save_note" style="margin:2px 0 4px;">Your progress lives only in this browser. Export a copy now and then.</div>
@@ -570,11 +578,13 @@
       <div id="coachTip" hidden></div>
       <h1 style="font-size:28px;" id="readyTitle">Redo att flyga?</h1>
       <p class="desc" id="readyDesc">Vida öppningar och lugnt tempo. Första trycket startar!</p>
+      <div class="airLegend tiny" id="airLegendReady" hidden></div>
       <button class="btn green" id="readyBtn">🐤 &nbsp;STARTA</button>
       <div class="modeseg">
         <button class="btn secondary" id="modeClassicBtn2" data-i18n="mode_classic_btn">⚪ Klassisk</button>
         <button class="btn secondary" id="modeSkyBtn2" data-i18n="mode_sky_btn">🔷 Sky</button>
       </div>
+      <button class="btn secondary" id="scoutBtn" hidden data-i18n="scout_btn">🔭 Spejarrunda (träning)</button>
       <button class="btn secondary" id="readyMenuBtn" data-i18n="menu_btn">Meny</button>
     </div>
   </div>
@@ -584,6 +594,7 @@
     <div class="card">
       <div class="neon" data-i18n="pause_kicker">Pausad</div>
       <h1 style="font-size:28px;" data-i18n="pause_title">Ta en paus 🍃</h1>
+      <div class="airLegend tiny" id="airLegendPause" hidden></div>
       <button class="btn green" id="resumeBtn" data-i18n="resume_btn">▶ Fortsätt</button>
       <div class="btnrow">
         <button class="btn secondary" id="pauseRestartBtn" data-i18n="restart_btn">↻ Starta om</button>
@@ -606,9 +617,25 @@
       <div class="tiny" id="overEarned" hidden></div>
       <div class="tiny" id="overTip">Tips: flaxa lite tidigare än du tror!</div>
       <button class="btn green" id="retryBtn" data-i18n="retry_btn">↻ &nbsp;FÖRSÖK IGEN</button>
+      <button class="btn secondary" id="overScoutBtn" hidden data-i18n="scout_over_btn">🔭 Spana in samma bana (träning)</button>
       <div class="btnrow">
         <button class="btn secondary" id="overMenuBtn" data-i18n="menu_btn">Meny</button>
         <button class="btn secondary" id="overLevelsBtn" data-i18n="worlds_btn">🌍 Världar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Round 3 E9: scout run result (practice — no rewards) -->
+  <div class="overlay" id="scoutOv" hidden>
+    <div class="card">
+      <div class="neon" id="scoutKicker" data-i18n="scout_done_kicker">TRÄNING — räknas inte</div>
+      <h1 style="font-size:28px;" id="scoutTitle" data-i18n="scout_done_title">🔭 Spejarrundan klar</h1>
+      <p class="desc" id="scoutLine"></p>
+      <div class="tiny" id="scoutNote" data-i18n="scout_done_note">Träning ger inga fjädrar, rekord, stjärnor eller medaljer.</div>
+      <button class="btn green" id="scoutRealBtn">▶ SPELA PÅ RIKTIGT</button>
+      <div class="btnrow">
+        <button class="btn secondary" id="scoutAgainBtn" data-i18n="scout_again_btn">🔭 Spana igen</button>
+        <button class="btn secondary" id="scoutMenuBtn" data-i18n="menu_btn">Meny</button>
       </div>
     </div>
   </div>
@@ -729,6 +756,7 @@
 <script src="src/save-transfer.js"></script>
 <script src="src/i18n.js"></script>
 <script src="src/analytics.js"></script>
+<script src="src/audio-glide.js"></script>
 <script src="src/game.js"></script>
 </body>
 </html>

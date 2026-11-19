@@ -13,7 +13,7 @@
 (function () {
 "use strict";
 const T = window.THREE_R3D; if (!T) return;
-const VERSION = "studio-r2.2";
+const VERSION = "studio-r2.6-b12";
 const INK = 0x1A1433;
 const flag = (q, k, d) => { try { const v = new URLSearchParams(location.search).get(q); if (v != null && v !== "") return v; } catch (e) {}
   try { const s = window.localStorage.getItem(k); if (s != null && s !== "") return s; } catch (e) {} return d; };
@@ -101,11 +101,11 @@ function withHull(geo, mat, w, parent, name) {
    ============================================================ */
 const PLANS = {
   tornisA: { kind: "swift", L: 20.5, H: 8.6, W: 7.8, tr: 0.62, tf: 0.18, headR: 7.4, head: [12.6, 1.8], eyeR: 3.7, eyeK: 0.62, beak: 4.6,
-    span: 46, chordRoot: 10.5, sickle: 1.0, tailL: 15, fork: 0.62, tailSpread: 7.5, throat: true, brow: 0.18 },
+    span: 46, chordRoot: 10.5, sickle: 1.0, tailL: 15, fork: 0.62, tailSpread: 7.5, throat: true, brow: 0.18, anat: { elbow: 0.32, wrist: 0.58, primaries: 4, fLen: 0.7, fWid: 0.22, fanBack: 0.35 } },
   glod: { kind: "robin", L: 17.5, H: 11, W: 10.5, tr: 0.3, tf: 0.12, headR: 9, head: [11, 3.4], eyeR: 3.6, eyeK: 0.6, beak: 4.2,
-    span: 30, chordRoot: 14, sickle: 0.1, tailL: 10, fork: 0.15, tailSpread: 5, throat: false, brow: 0.1 },
+    span: 30, chordRoot: 14, sickle: 0.1, tailL: 10, fork: 0.15, tailSpread: 5, throat: false, brow: 0.1, anat: { elbow: 0.4, wrist: 0.66, primaries: 5, fLen: 0.8, fWid: 0.24, fanBack: 0.65 } },
   frost: { kind: "tern", L: 21, H: 7.6, W: 7.2, tr: 0.7, tf: 0.15, headR: 6.6, head: [13, 1.6], eyeR: 3.0, eyeK: 0.6, beak: 7.5,
-    span: 48, chordRoot: 9, sickle: 0.45, tailL: 21, fork: 0.85, tailSpread: 9, throat: false, brow: 0.05 }
+    span: 48, chordRoot: 9, sickle: 0.45, tailL: 21, fork: 0.85, tailSpread: 9, throat: false, brow: 0.05, anat: { elbow: 0.36, wrist: 0.62, primaries: 4, fLen: 0.8, fWid: 0.22, fanBack: 0.5 } }
 };
 const BIRD_PLAN = { tornis: "tornisA", sunny: "tornisA", guld: "tornisA", natt: "tornisA",
   neon: "tornisA", kosmos: "tornisA", lagoon: "tornisA", ang: "tornisA", glod: "glod", frost: "frost" };
@@ -118,6 +118,21 @@ function wingOutline(p) {
   const trail = bez([-c * 0.55, 0], [-c * 0.7, S * 0.28], [-S * (0.2 + 0.25 * k), S * (0.62 + 0.1 * k)], tip, 9);
   return { lead, trail };
 }
+/* ---------- B-12 wing anatomy: joints (shoulder → elbow → wrist) and primary feathers, in the 2D outline space (x = chord, y = span) ---------- */
+function edgeAt(poly, u) { for (let i = 0; i < poly.length - 1; i++) { const a = poly[i], b = poly[i + 1]; if (u <= b[1] || i === poly.length - 2) { const k = (u - a[1]) / ((b[1] - a[1]) || 1); return [a[0] + (b[0] - a[0]) * k, u, b[0] - a[0], b[1] - a[1]]; } } return poly[poly.length - 1]; }
+function wingJoints(p, lead, trail) { const S = p.span, A = p.anat || {}, uE = S * (A.elbow || 0.36), uW = S * (A.wrist || 0.64);
+  const mid = u => (edgeAt(lead, u)[0] + edgeAt(trail, u)[0]) / 2; return { uE, uW, xE: mid(uE), xW: mid(uW), dE: S * 0.07, dW: S * 0.06 }; }
+function featherSpec(p, lead, trail) { const A = p.anat || {}, n = A.primaries || 4, S = p.span, out = [];
+  for (let k = 0; k < n; k++) { const u = S * (0.6 + 0.36 * k / Math.max(1, n - 1)), te = edgeAt(trail, u), le = edgeAt(lead, u), chord = Math.max(2.5, le[0] - te[0]);
+    const tl = Math.hypot(te[2], te[3]) || 1, tx = te[2] / tl, ty = te[3] / tl, back = A.fanBack == null ? 0.55 : A.fanBack; // edge direction rotated toward the trailing side
+    let dx = tx * (1 - back) - back, dy = ty * (1 - back) + 0.15 * back; const dl = Math.hypot(dx, dy); dx /= dl; dy /= dl;
+    const L = chord * (A.fLen || 0.75) * (1 - 0.25 * k / n) + 2, w = chord * (A.fWid || 0.26) + 0.8;
+    out.push({ root: [te[0] + chord * 0.12, u], dir: [dx, dy], L, w, u }); }
+  return out; }
+function featherGeo(f, k, col, mirror) { const [rx, ry] = f.root, [dx, dy] = f.dir, px = -dy, py = dx, L = f.L, w = f.w;
+  const a0 = [rx - dx * L * 0.35 + px * w / 2, ry - dy * L * 0.35 + py * w / 2], b0 = [rx - dx * L * 0.35 - px * w / 2, ry - dy * L * 0.35 - py * w / 2], tip = [rx + dx * L * 0.65, ry + dy * L * 0.65];
+  const c = new T.Color(col).multiplyScalar(0.84 - 0.03 * k);
+  const g = slabPart([a0, tip], [b0, tip], 0.6, trs(0, 0, -0.35 - 0.12 * k), "#" + c.getHexString()); g.rotateX(Math.PI / 2); if (mirror) { g.scale(1, 1, -1); flipWinding(g); } return g; }
 function makeSwift(pal, planId, opts) {
   opts = opts || {};
   const p = PLANS[planId] || PLANS.tornisA;
@@ -161,14 +176,20 @@ function makeSwift(pal, planId, opts) {
   // --- wings: long pointed sickle slabs, pivot at the shoulder, span along +z (near) / −z (far)
   const { lead, trail } = wingOutline(p);
   const wingGeoFor = (col, mirror) => { const g = slabPart(lead, trail, 1.3, null, col); g.rotateX(Math.PI / 2); if (mirror) { g.scale(1, 1, -1); flipWinding(g); } return g; };
+  const FS = featherSpec(p, lead, trail); // B-12: primary feathers (separate slabs, skinned individually)
   // the camera mostly sees the UNDERSIDE of the raised near wing (as the 2D drawing does) → self-lit wing material so it keeps the wing colour
   const wingMat = () => wingVC();
   const wings = [];
   for (const zs of [1, -1]) {
-    const piv = new T.Group(); piv.position.set(2.5, p.H * 0.45, zs * p.W * 0.55); rig.add(piv);
+    const piv = new T.Group(); piv.position.set(0.6, p.H * 0.55, zs * p.W * 0.55); rig.add(piv); // B-12: shoulder on the back, behind the head (the wing is now seen face-on)
     const wg = new T.Group(); piv.add(wg);
-    const wgeo = wingGeoFor(zs > 0 ? wing : far, zs < 0); if (ao) applyAO(wgeo, zs > 0 ? "wingL" : "wingR");
-    withHull(wgeo, wingMat(zs > 0 ? wing : far), 0.6, wg, "wing");
+    let wgeo = wingGeoFor(zs > 0 ? wing : far, zs < 0); if (ao) applyAO(wgeo, zs > 0 ? "wingL" : "wingR");
+    const slabN = wgeo.getAttribute("position").count, fparts = FS.map((f, k) => featherGeo(f, k, zs > 0 ? wing : far, zs < 0));
+    const fRanges = []; let at = slabN; for (const g of fparts) { const n = g.getAttribute("position").count; fRanges.push([at, n]); at += n; }
+    wgeo = merge([wgeo, ...fparts]);
+    const wh = withHull(wgeo, wingMat(zs > 0 ? wing : far), 0.6, wg, "wing");
+    wh.m.frustumCulled = wh.h.frustumCulled = false; // B-12: vertices move every frame (CPU skin) – never cull on the rest-pose bounds
+    wh.m.userData.skinInfo = { side: zs, span: p.span, joints: wingJoints(p, lead, trail), feathers: FS.map((f, k) => ({ range: fRanges[k], root: f.root, u: f.u })) };
     wings.push(piv);
   }
   // --- tail: characteristic fork, two blades (vertical spread reads from the side, slight z splay)
@@ -252,15 +273,122 @@ function buildScarf(bird, col, col2) {
   return g;
 }
 
+/* ============================================================
+   B-12 FLIGHT ANIMATION (shared by every bird, render-only). Root cause of the "shrinking wings" (checkpoints/B12.md):
+   the old rig swung one rigid wing slab about the body's long axis, i.e. towards/away from the near-orthographic side
+   camera, so its projected length followed sin(elevation): 27→58 px on Tornis (min/max 0.47), far wing 0.25.
+   New system: the wing plane stays facing the camera (constant small lean), the stroke is a rotation in that plane from
+   the shoulder, the hand bends at the elbow and the wrist (fold on the upstroke, lag behind the motion), primary feathers
+   rotate individually with a phase offset, the body bobs/pitches with the stroke. Bone lengths never change; only the
+   deliberate upstroke/dive fold shortens the span. Inputs: the flap event (B.since restarting), B.vy, S.time — the same
+   presentation copy the old pose used. Never touches S, physics or the hitbox (the rig is a child of the bird root).
+   Each bird has its own flight character (FLIGHT table). Reduced motion: one soft beat per tap, smaller amplitude, no bob,
+   no feather flutter, no idle/glide oscillation, static menu pose.
+   ============================================================ */
+const FLIGHT_DEFAULTS = { twist0: 0.3 }; // constant feathering; 0.5 cost 7 % projected span (metric 19 nov)
+const FLIGHT_BASE = {
+  // tip elevation above horizontal-back (deg) for the stroke top/bottom, glide and dive; hz = wingbeats/s; beats per tap;
+  // dsf = downstroke share of the cycle; fold (0..1 of foldE/foldW rad) on the upstroke; lag = hand lag (rad); feather = primary flutter (rad)
+  tornisA: { top: 58, bot: 6, glide: 34, dive: 12, hz: 9, beats: 2, dsf: 0.5, foldE: 0.10, foldW: 0.10, diveFold: 0.35, lag: 0.06, feather: 0.06,
+    tilt: 0.08, twist: 0.03, bob: 0.35, pitch: 0.03, glideOsc: 0.025, glideFold: 0.06, spread: 0.04 }, // swift: fast shallow beats, long sickle glides, minimal fold
+  glod: { top: 70, bot: -32, glide: 22, dive: 2, hz: 11, beats: 3, dsf: 0.55, foldE: 0.30, foldW: 0.42, diveFold: 0.5, lag: 0.12, feather: 0.10,
+    tilt: 0.06, twist: 0.05, bob: 0.8, pitch: 0.06, glideOsc: 0.02, glideFold: 0.22, spread: 0.09 },    // robin: bursts of deep beats, folds into a bound
+  frost: { top: 66, bot: -26, glide: 30, dive: 8, hz: 4.8, beats: 2, dsf: 0.56, foldE: 0.18, foldW: 0.26, diveFold: 0.35, lag: 0.16, feather: 0.1,
+    tilt: 0.08, twist: 0.05, bob: 0.5, pitch: 0.045, glideOsc: 0.03, glideFold: 0.03, spread: 0.06 }  // tern: slow deep elegant strokes, wide glide
+};
+const FLIGHT_BIRD = { // own character per bird on top of its plan
+  tornis: {}, sunny: { hz: 8.4, glideOsc: 0.032 }, guld: { hz: 7.8, top: 62, bot: 2, lag: 0.08 }, natt: { hz: 7, lag: 0.1, feather: 0.09, bob: 0.3 },
+  neon: { hz: 10.5, beats: 3, top: 54, bot: 10, lag: 0.04 }, kosmos: { hz: 6.6, beats: 2, glideOsc: 0.05, top: 62, bot: 0, feather: 0.08 },
+  lagoon: { hz: 8, lag: 0.09, bot: 2 }, ang: { hz: 9.6, glideOsc: 0.035, spread: 0.05 }, glod: {}, frost: {}
+};
+const D2R = Math.PI / 180, TAU2 = Math.PI * 2;
+const sstep = x => { x = x < 0 ? 0 : x > 1 ? 1 : x; return x * x * (3 - 2 * x); };
+function flightParams(b, palId, rm) {
+  const k = palId + "|" + b.plan + "|" + (rm ? 1 : 0); if (b._flk === k) return b._flp;
+  const P = Object.assign({}, FLIGHT_DEFAULTS, FLIGHT_BASE[b.plan] || FLIGHT_BASE.tornisA, FLIGHT_BIRD[palId] || {});
+  const sk = b.p.sickle, sweep = Math.atan2(b.p.span * (0.45 + 0.3 * sk), b.p.span) / D2R; // tip direction vs. span axis (sickle)
+  const th = e => (90 - e - sweep) * D2R; // tip elevation → stroke angle (rotation in the wing plane, 0 = span axis up)
+  if (rm) { const m = (P.top + P.bot) / 2, a = (P.top - P.bot) / 2 * 0.6; P.top = m + a; P.bot = m - a; P.hz *= 0.75; P.beats = 1; P.bob = 0; P.pitch = 0; P.feather = 0; P.glideOsc = 0; P.lag *= 0.6; }
+  P.thTop = th(P.top); P.thBot = th(P.bot); P.thGlide = th(P.glide); P.thDive = th(P.dive);
+  P.mean = (P.thTop + P.thBot) / 2; P.amp = (P.thBot - P.thTop) / 2;
+  // phase on the downstroke where the stroke passes the glide angle: a tap starts there, so the pose is continuous
+  const c = Math.max(-1, Math.min(1, -(P.thGlide - P.mean) / P.amp)); P.phi0 = Math.acos(c) / TAU2 * 2 * P.dsf; // g = phi/(2 dsf) on the downstroke
+  b._flk = k; b._flp = P; return P;
+}
+function strokeAt(P, phi) { // phi ∈ [0,1): 0 = top; downstroke takes dsf of the cycle. Returns angle, upstroke fold 0..1, normalised velocity −1..1
+  const f = phi - Math.floor(phi), g = f < P.dsf ? 0.5 * f / P.dsf : 0.5 + 0.5 * (f - P.dsf) / (1 - P.dsf);
+  const th = P.mean - P.amp * Math.cos(TAU2 * g), dg = f < P.dsf ? 0.5 / P.dsf : 0.5 / (1 - P.dsf);
+  const vel = Math.sin(TAU2 * g) * dg * P.dsf * 2; // dθ/dφ / (π·amp/dsf), +1 ≈ peak downstroke speed
+  const fold = g > 0.5 ? Math.pow(Math.sin(Math.PI * (g - 0.5) * 2), 2) : 0;
+  return { th, fold, vel, g };
+}
+const QGP = new T.Quaternion().setFromEuler(new T.Euler(0.24, -0.3, 0)).invert(); // gameplay rig yaw/bank: the wing plane is defined in the bird-root frame
+const _qa = new T.Quaternion(), _qb = new T.Quaternion(), _ex = new T.Vector3(1, 0, 0), _ey = new T.Vector3(0, 1, 0), _ez = new T.Vector3(0, 0, 1);
+function wingQuat(out, side, th, tilt, twist) { // root-space orientation: Rz(th) · Rx(±tilt) · Ry(±twist) · Rx(∓π/2)  (span axis → +y, lean towards/away from the camera)
+  out.setFromAxisAngle(_ez, th); _qa.setFromAxisAngle(_ex, side * tilt); out.multiply(_qa); _qa.setFromAxisAngle(_ey, side * twist); out.multiply(_qa);
+  _qa.setFromAxisAngle(_ex, -side * Math.PI / 2); out.multiply(_qa); return out.premultiply(QGP); }
+function skinWing(mesh, aE, aW, bE, fAng) { // CPU skin in the wing-geometry frame (x = chord, z = ±span, y = normal); angles are tip-forward positive
+  const info = mesh.userData.skinInfo; if (!info) return; const geo = mesh.geometry, pa = geo.getAttribute("position"), na = geo.getAttribute("normal");
+  let sk = mesh.userData.skin;
+  if (!sk || sk.geo !== geo) { // (re)build after baking: base pose + per-vertex span weights + feather index
+    const n = pa.count, J = info.joints, sd = info.side, base = pa.array.slice(), nb = na.array.slice(), wE = new Float32Array(n), wW = new Float32Array(n), fk = new Int8Array(n).fill(-1);
+    for (const [k, f] of info.feathers.entries()) for (let i = f.range[0]; i < f.range[0] + f.range[1]; i++) fk[i] = k;
+    for (let i = 0; i < n; i++) { const u = fk[i] >= 0 ? info.feathers[fk[i]].u : sd * base[i * 3 + 2]; wE[i] = sstep((u - J.uE + J.dE) / (2 * J.dE)); wW[i] = sstep((u - J.uW + J.dW) / (2 * J.dW)); }
+    sk = mesh.userData.skin = { geo, base, nb, wE, wW, fk, n }; }
+  const J = info.joints, sd = info.side, P = pa.array, N = na.array, B = sk.base, NB = sk.nb, zE = sd * J.uE, zW = sd * J.uW;
+  for (let i = 0; i < sk.n; i++) {
+    let x = B[i * 3], y = B[i * 3 + 1], z = B[i * 3 + 2], nx = NB[i * 3], ny = NB[i * 3 + 1], nz = NB[i * 3 + 2], c, s, t;
+    const k = sk.fk[i];
+    if (k >= 0) { const f = info.feathers[k], a = sd * fAng[k], rx = f.root[0], rz = sd * f.root[1]; c = Math.cos(a); s = Math.sin(a); // feather about its own root (in-plane)
+      const dx = x - rx, dz = z - rz; x = rx + dx * c + dz * s; z = rz - dx * s + dz * c; t = nx * c + nz * s; nz = -nx * s + nz * c; nx = t; }
+    const ww = sk.wW[i], we = sk.wE[i];
+    if (ww > 0) { const a = sd * aW * ww; c = Math.cos(a); s = Math.sin(a); const dx = x - J.xW, dz = z - zW; x = J.xW + dx * c + dz * s; z = zW - dx * s + dz * c; t = nx * c + nz * s; nz = -nx * s + nz * c; nx = t; }
+    if (we > 0) { let a = sd * aE * we; c = Math.cos(a); s = Math.sin(a); let dx = x - J.xE, dz = z - zE; x = J.xE + dx * c + dz * s; z = zE - dx * s + dz * c; t = nx * c + nz * s; nz = -nx * s + nz * c; nx = t;
+      a = sd * bE * we; c = Math.cos(a); s = Math.sin(a); dz = z - zE; const y2 = y * c - dz * s; z = zE + y * s + dz * c; y = y2; t = ny * c - nz * s; nz = ny * s + nz * c; ny = t; } // out-of-plane camber at the elbow
+    P[i * 3] = x; P[i * 3 + 1] = y; P[i * 3 + 2] = z; N[i * 3] = nx; N[i * 3 + 1] = ny; N[i * 3 + 2] = nz;
+  }
+  pa.needsUpdate = true; na.needsUpdate = true;
+}
+const wingMeshOf = piv => { let m = null; piv.traverse(n => { if (!m && n.isMesh && !n.userData.hull && n.userData.skinInfo) m = n; }); return m; };
+/* state machine (presentation only): continuous cycle counter, flap weight w, smoothed dive/dead blends */
+function flyPose(bird, B, t, rm) {
+  const P = flightParams(bird, B.palId, rm), F = bird.fly || (bird.fly = { cyc: 0, end: 0, w: 0, wl: 0, dive: 0, dead: 0, last: null, tp: null });
+  let dt = F.tp == null ? 0 : t - F.tp; if (dt < 0 || dt > 0.5) { dt = 0; F.w = F.wl = 0; F.cyc = F.end = Math.floor(F.cyc); } dt = Math.min(dt, 0.05); F.tp = t;
+  const menu = !!B.menu, dead = !!B.dead;
+  const tap = !menu && !dead && B.since != null && (F.last == null || B.since < F.last - 1e-4); F.last = menu || dead ? null : B.since;
+  if (tap) { if (F.wl < 0.05 && F.cyc >= F.end) { F.cyc = Math.floor(F.cyc) + 1 + P.phi0; F.end = Math.floor(F.cyc) + P.beats; } // from glide: enter the downstroke at the glide angle (continuous)
+    else F.end = Math.max(F.end, (F.cyc >= F.end ? F.cyc : Math.ceil(F.cyc)) + P.beats - (F.cyc >= F.end ? 0 : 1)); } // mid-beat or fading: keep the phase, add beats
+  const hover = menu && !rm, hz = hover ? P.hz * 0.4 : P.hz;
+  if (hover && F.cyc + 1 > F.end) F.end = Math.floor(F.cyc) + 2;
+  const active = F.cyc < F.end;
+  if (active) F.cyc = Math.min(F.end, F.cyc + dt * hz); // beats end on the stroke top (zero velocity), then w eases the top pose into the glide pose
+  F.wl = active ? Math.min(1, F.wl + dt / 0.05) : Math.max(0, F.wl - dt / (rm ? 0.1 : 0.16)); F.w = sstep(F.wl);
+  const diveT = dead || menu ? 0 : sstep(((B.vy || 0) - 260) / 200); F.dive += (diveT - F.dive) * Math.min(1, dt * 12); if (dt === 0) F.dive = diveT;
+  F.dead += ((dead ? 1 : 0) - F.dead) * Math.min(1, dt * 10); if (dt === 0) F.dead = dead ? 1 : 0;
+  const osc = rm ? 0 : P.glideOsc * Math.sin(t * TAU2 * 0.55);
+  // base (glide ↔ dive ↔ dead) pose
+  const thBase = P.thGlide + osc + (P.thDive - P.thGlide) * F.dive + (125 * D2R - P.thGlide) * F.dead;
+  const foldBase = P.glideFold + (P.diveFold - P.glideFold) * F.dive + (0.35 - P.glideFold) * F.dead;
+  const st = strokeAt(P, F.cyc), amp = hover ? 0.7 : 1, w = F.w * (1 - F.dead);
+  const thS = P.mean + (st.th - P.mean) * amp + (hover ? (P.thGlide - P.mean) * 0.4 : 0);
+  const th = thBase + (thS - thBase) * w, fold = foldBase + (st.fold * amp - foldBase) * w, vel = st.vel * w * amp;
+  const tilt = P.tilt + 0.03 * w * Math.sin(TAU2 * st.g), twist = P.twist0 - P.twist * vel; // twist0: constant feathering about the span axis (slimmer, shaded planform; span length unaffected)
+  const aE = -P.foldE * fold + P.lag * 0.4 * vel, aW = -P.foldW * fold + P.lag * 0.6 * vel, bE = 0.04 + 0.03 * w * Math.cos(TAU2 * st.g);
+  const nF = (bird.p.anat && bird.p.anat.primaries) || 4, fAng = [];
+  for (let k = 0; k < nF; k++) { const c = k - (nF - 1) / 2; fAng.push(P.spread * c * (1 - fold * 0.8) - 0.05 * fold * k + P.feather * w * Math.sin(TAU2 * (F.cyc - 0.08 * k)) + P.lag * 0.5 * vel * (k + 1) / nF + (rm ? 0 : 0.012 * (1 - w) * Math.sin(t * 7.3 + k * 1.7))); }
+  const wl = bird.parts.wingL, wr = bird.parts.wingR, farOff = 24 * D2R;
+  wingQuat(wl.quaternion, 1, th, tilt, twist); wingQuat(wr.quaternion, -1, th + farOff, tilt * 0.8, twist);
+  const ml = bird.wingMeshL || (bird.wingMeshL = wingMeshOf(wl)), mr = bird.wingMeshR || (bird.wingMeshR = wingMeshOf(wr));
+  if (ml) skinWing(ml, aE, aW, bE, fAng); if (mr) skinWing(mr, aE, aW, bE, fAng);
+  // body follows the stroke: lift on the downstroke, slight nose-up (applied on the root, after the game's position/rotation)
+  bird.flyBob = P.bob * w * -Math.cos(TAU2 * st.g) * amp; bird.flyPitch = P.pitch * w * Math.sin(TAU2 * st.g) * amp;
+  F.out = { th, fold, w, dive: F.dive, cyc: F.cyc, tap };
+}
 /* ---------- pose (same inputs as render3d.js updateBird: identity.wingAngle degrees, vy, rot, blink…) ---------- */
 function poseSwift(bird, B, t, rm) {
   bird.rig.rotation.set(B.menu && !rm ? 0.28 + Math.sin(t * 0.6) * 0.1 : 0.24, B.menu && !rm ? -0.4 + Math.sin(t * 0.5) * 0.25 : -0.3, 0);
-  // swift: low glide elevation, sharp up-flick on flap, wings swept back on a dive
-  // Stylised like the 2D drawing: the NEAR wing is the hero shape (raised, up-back sickle in front of the body), the FAR wing
-  // sits lower behind it. wingDeg: −28 flap peak … +8 dive. near ≈ 50° glide / 95° peak / 37° dive; far = near − 36°.
-  const near = (B.dead ? 4 : 50 - B.wingDeg * 1.6) * Math.PI / 180, farE = near - (B.dead ? 0 : 36 * Math.PI / 180);
-  const sweep = B.wingDeg > 4 ? 0.42 : 0.06;
-  bird.parts.wingL.rotation.set(-near, sweep, 0); bird.parts.wingR.rotation.set(farE, -sweep, 0);
+  // B-12: wings from the shared flight system (replaces the 120 ms elevation flick about the body axis, see FLIGHT above)
+  flyPose(bird, B, t, rm);
   bird.parts.tail.rotation.z = rm ? 0 : Math.sin(t * 3.1) * 0.05 - Math.max(-0.2, Math.min(0.25, B.vy / 2400));
   for (const e of bird.parts.eyes) e.scale.y = B.dead ? 0.15 : B.blink ? 0.12 : B.happy ? 0.55 : 1;
   const sc = bird.root.getObjectByName("scarfTails");
@@ -284,8 +412,11 @@ function periodicNoise(P, seed, terms) { const r = lcg(seed), ks = []; for (let 
 /* a periodic ridge strip: x ∈ [−1.5P, 1.5P], top = base + amp·noise, vertex colours bottom→top, optional snow above snowY */
 function ridge(P, cols, base, amp, depth, seed, c0, c1, snowAt, jag) {
   const nz = periodicNoise(P, seed, 6), pos = [], col = [], C0 = new T.Color(c0), C1 = new T.Color(c1), SN = new T.Color("#FFFFFF");
-  const N = cols, x0 = -1.5 * P, dx = 3 * P / N; const tops = [];
-  for (let i = 0; i <= N; i++) { const x = x0 + i * dx; let y = base + amp * (0.5 + 0.5 * nz(x)); if (jag) y += jag * ((i * 7919 % 13) / 13 - 0.5); tops.push([x, y]); }
+  // B-12 P2: the strip jumps by one period P when it wraps, so the silhouette must repeat EXACTLY every P: whole columns per
+  // period (N = 3·Np) and a jag pattern indexed per period (before: N not divisible by 3 and a non-periodic jag → the far ridges
+  // changed shape in view at every wrap, up to 77 units).
+  const Np = Math.max(1, Math.round(cols / 3)), N = 3 * Np, x0 = -1.5 * P, dx = P / Np; const tops = [];
+  for (let i = 0; i <= N; i++) { const x = x0 + i * dx; let y = base + amp * (0.5 + 0.5 * nz(x)); if (jag) y += jag * (((i % Np) * 7919 % 13) / 13 - 0.5); tops.push([x, y]); }
   const bot = base - 900;
   const push = (x, y, z, c) => { pos.push(x, y, z); col.push(c.r, c.g, c.b); };
   for (let i = 0; i < N; i++) {
@@ -433,14 +564,21 @@ function buildGV(R) {
   GV.flockI = inst(vG, vc("basic"), 7);
   for (let i = 0; i < 7; i++) { const m = new T.Object3D(); GV.flock.push({ m, d: 2200 + i * 40, bx: rnd() * 6000, y: 300 + rnd() * 260, ph: rnd() * 6, v: 30 + rnd() * 20 }); }
   const mp = new Float32Array(70 * 3); GV.motes = []; for (let i = 0; i < 70; i++) GV.motes.push({ bx: rnd() * 1600, y: rnd() * 600, d: 140 + rnd() * 400, ph: rnd() * 6 });
-  const mg = new T.BufferGeometry(); mg.setAttribute("position", new T.BufferAttribute(mp, 3));
-  GV.moteP = new T.Points(mg, new T.PointsMaterial({ color: "#FFF6C8", size: 2.2, sizeAttenuation: false, transparent: true, opacity: 0.55, depthWrite: false })); GV.moteP.frustumCulled = false; G.add(GV.moteP);
+  const mg = new T.BufferGeometry(); mg.setAttribute("position", new T.BufferAttribute(mp, 3)); mg.setAttribute("color", new T.BufferAttribute(new Float32Array(70 * 4).fill(1), 4)); // B-12 P2: per-mote alpha
+  GV.moteP = new T.Points(mg, new T.PointsMaterial({ color: "#FFF6C8", size: 2.2, sizeAttenuation: false, transparent: true, opacity: 0.55, depthWrite: false, vertexColors: true })); GV.moteP.frustumCulled = false; G.add(GV.moteP);
   // perf: double-sided transparent materials would render in two passes (back+front) – one pass is visually identical for these flat cards
   G.traverse(n => { const m = n.material; if (m && m.side === T.DoubleSide) m.forceSinglePass = true; });
   GV.built = true;
 }
 const _m = new T.Matrix4(), _q = new T.Quaternion(), _p = new T.Vector3(), _s = new T.Vector3(), _e = new T.Euler(), _c0 = new T.Color(), _m2 = new T.Matrix4();
 const wrapX = (base, camx, span) => base + span * Math.round((camx - base) / span);
+/* B-12 P2 (background pop, root cause in checkpoints/B12.md): (1) motes wrapped horizontally with a fixed 1600 span and
+   vertically with a modulo band whose ends lie inside the view → they jumped in view; now the horizontal span always exceeds
+   the visible width at the mote's depth and the band ends are faded with a per-point alpha window (bandA). (2) The gap guard
+   hid fauna/motes/set-pieces in ONE frame when they touched the gap margin; now it fades them out ahead of time in a wider
+   approach zone (GG.near) and keeps the old instant hide only as a safety fallback (GG.stats.hard). */
+const moteSpan = (visW, d) => Math.max(1600, visW(d) + 400);
+const bandA = u => { u = u - Math.floor(u); const e = Math.min(u, 1 - u); return sstep((e - 0.02) / 0.13); }; // 0 at the wrap seam of a 0..1 band
 function updateGV(R, S, o) {
   const cam = R.bgCam, camx = cam.position.x, t = o.rm ? 0 : (S.time || 0), v = R.view, DC = 760, gy = S.H - S.groundH;
   const visW = d => v.viewW * (DC + d) / DC;
@@ -494,8 +632,9 @@ function updateGV(R, S, o) {
   // flock and motes
   GV.flock.forEach(f => { const x = wrapX(f.bx - t * f.v, camx, visW(f.d) + 800); f.m.position.set(x, cam.position.y + f.y * (DC + f.d) / DC * 0.6, -f.d); f.m.scale.set(1.4, 1 + 0.6 * Math.sin(t * 6 + f.ph), 1); f.m.updateMatrix(); GV.flockI.setMatrixAt(GV.flock.indexOf(f), f.m.matrix); }); GV.flockI.instanceMatrix.needsUpdate = true;
   const mp = GV.moteP.geometry.getAttribute("position");
-  GV.motes.forEach((m, k) => { const x = wrapX(m.bx + Math.sin(t * 0.4 + m.ph) * 20 - t * 6, camx, 1600); mp.setXYZ(k, x, -gy + 40 + ((m.y + t * 8) % 600), -m.d); });
-  mp.needsUpdate = true;
+  const ma = GV.moteP.geometry.getAttribute("color");
+  GV.motes.forEach((m, k) => { const x = wrapX(m.bx + Math.sin(t * 0.4 + m.ph) * 20 - t * 6, camx, moteSpan(visW, m.d)), u = (m.y + t * 8) / 600; mp.setXYZ(k, x, -gy + 40 + 600 * (u - Math.floor(u)), -m.d); ma.setW(k, bandA(u)); });
+  mp.needsUpdate = true; ma.needsUpdate = true;
 }
 
 /* ============================================================
@@ -672,8 +811,8 @@ function buildKit(R, key) {
   E.cloudItems = []; for (let i = 0; i < 7; i++) E.cloudItems.push({ d: 3600 + rnd() * 2400, bx: rnd() * 30000, y: 900 + rnd() * 1300, s: 1.4 + rnd() * 1.6, v: 4 + rnd() * 6 });
   E.clouds = inst(ico(0), new T.MeshLambertMaterial({ color: new T.Color(K.clouds[0]), emissive: new T.Color(K.clouds[1]), flatShading: true }), E.cloudItems.length * 5);
   const [mk, mn, mnLo, mc] = K.motes; E.motes = []; for (let i = 0; i < mn; i++) E.motes.push({ bx: rnd() * 1600, y: rnd() * 600, d: 140 + rnd() * 500, ph: rnd() * 6.28 });
-  const mg = new T.BufferGeometry(); mg.setAttribute("position", new T.BufferAttribute(new Float32Array(mn * 3), 3));
-  E.moteP = new T.Points(mg, new T.PointsMaterial({ color: mc, size: mk === "snow" ? 2.6 : 2.2, sizeAttenuation: false, transparent: true, opacity: mk === "fireflies" || mk === "sparkle" ? 0.85 : 0.7, depthWrite: false }));
+  const mg = new T.BufferGeometry(); mg.setAttribute("position", new T.BufferAttribute(new Float32Array(mn * 3), 3)); mg.setAttribute("color", new T.BufferAttribute(new Float32Array(mn * 4).fill(1), 4)); // B-12 P2: per-mote alpha
+  E.moteP = new T.Points(mg, new T.PointsMaterial({ color: mc, size: mk === "snow" ? 2.6 : 2.2, sizeAttenuation: false, transparent: true, opacity: mk === "fireflies" || mk === "sparkle" ? 0.85 : 0.7, depthWrite: false, vertexColors: true }));
   E.moteP.frustumCulled = false; E.moteKind = mk; E.moteLo = mnLo; G.add(E.moteP);
   G.traverse(n => { const m = n.material; if (m && m.side === T.DoubleSide) m.forceSinglePass = true; });
   KIT.built[key] = E; return E;
@@ -721,20 +860,21 @@ const SETS = {
 /* gap guard: "nothing overlaps the gap" (WORLD_FLORA_FAUNA rule 1), enforced per frame in screen space.
    Gap rects come from the fg camera; kit objects are projected with the bg camera. Anything inside a gap (+ margin)
    fades out (fauna shrink, motes hide, set-pieces fade) and comes back once the gate has passed. Snow is weather and exempt. */
-const GG = { rects: [], v: new T.Vector3(), stats: { checks: 0, hits: 0 } };
+const GG = { rects: [], near: [], v: new T.Vector3(), stats: { checks: 0, hits: 0, hard: 0 } };
 function gapRects(R, S) { const out = GG.rects; out.length = 0; const c = R.fgCam, v = GG.v, mx = 0.035, my = 0.02, lead = 0.05; // lead: extra margin on the left (gates scroll left), so the fade finishes before contact
   for (const ob of S.pipes) { if (ob.gapY == null || !ob.gap) continue; const w = ob.w || 78, top = ob.gapY - ob.gap / 2, bot = ob.gapY + ob.gap / 2;
     v.set(ob.x, -top, 0).project(c); const x0 = v.x, y0 = v.y; v.set(ob.x + w, -bot, 0).project(c);
     out.push([Math.min(x0, v.x) - mx - lead, Math.max(x0, v.x) + mx, Math.min(y0, v.y) - my, Math.max(y0, v.y) + my]); }
+  GG.near = out.map(r => [r[0] - 0.32, r[1] + 0.04, r[2] - 0.09, r[3] + 0.09]); // B-12 P2: approach zone – fade starts here (gates scroll left; the bg camera follows the bird vertically)
   GG.frameRects = out.map(r => r.slice()); GG.frameTime = S.time; return out; }
-function ndcHit(x0, x1, y0, y1) { for (const r of GG.rects) if (x1 > r[0] && x0 < r[1] && y1 > r[2] && y0 < r[3]) return true; return false; }
-function inGap(cam, x, y, z, rad) { const v = GG.v.set(x, y, z).project(cam); if (v.z > 1) return false; const k = rad * 2 / Math.max(1, -z + 760) * 1.6; GG.stats.checks++; const h = ndcHit(v.x - k, v.x + k, v.y - k, v.y + k); if (h) GG.stats.hits++; return h; }
+function ndcHit(x0, x1, y0, y1, near) { for (const r of (near ? GG.near || [] : GG.rects)) if (x1 > r[0] && x0 < r[1] && y1 > r[2] && y0 < r[3]) return true; return false; }
+function inGap(cam, x, y, z, rad, near) { const v = GG.v.set(x, y, z).project(cam); if (v.z > 1) return false; const k = rad * 2 / Math.max(1, -z + 760) * 1.6; if (near) return ndcHit(v.x - k, v.x + k, v.y - k, v.y + k, true); GG.stats.checks++; const h = ndcHit(v.x - k, v.x + k, v.y - k, v.y + k); if (h) GG.stats.hits++; return h; }
 function localBox(g) { if (g.userData.lb) return g.userData.lb; const a = g.getAttribute("position").array, b = [1e9, 1e9, 1e9, -1e9, -1e9, -1e9];
   for (let i = 0; i < a.length; i += 3) for (let j = 0; j < 3; j++) { b[j] = Math.min(b[j], a[i + j]); b[j + 3] = Math.max(b[j + 3], a[i + j]); } return (g.userData.lb = b); }
-function boxInGap(cam, obj, pad) { pad = pad || 0; let x0 = 9, x1 = -9, y0 = 9, y1 = -9, any = false; // screen bbox of all meshes (local AABB corners → world → NDC); vendored THREE has no Box3
+function boxInGap(cam, obj, pad, near) { pad = pad || 0; let x0 = 9, x1 = -9, y0 = 9, y1 = -9, any = false; // screen bbox of all meshes (local AABB corners → world → NDC); vendored THREE has no Box3
   obj.traverse(n => { if (!n.isMesh || (n !== obj && !n.visible)) return; /* root visibility is the guard's output, not an input */ const b = localBox(n.geometry); any = true;
     for (let i = 0; i < 8; i++) { GG.v.set(b[i & 1 ? 3 : 0], b[i & 2 ? 4 : 1], b[i & 4 ? 5 : 2]).applyMatrix4(n.matrixWorld).project(cam); x0 = Math.min(x0, GG.v.x); x1 = Math.max(x1, GG.v.x); y0 = Math.min(y0, GG.v.y); y1 = Math.max(y1, GG.v.y); } });
-  if (!any) return false; GG.stats.checks++; const h = ndcHit(x0 - pad, x1 + pad, y0 - pad * 0.5, y1 + pad * 0.5); if (h) GG.stats.hits++; return h; }
+  if (!any) return false; if (near) return ndcHit(x0 - pad, x1 + pad, y0 - pad * 0.5, y1 + pad * 0.5, true); GG.stats.checks++; const h = ndcHit(x0 - pad, x1 + pad, y0 - pad * 0.5, y1 + pad * 0.5); if (h) GG.stats.hits++; return h; }
 function gapAudit() { const R = window.Render3D && Render3D._R, E = KIT.cur; if (!R || !E) return null; const S = R.lastView, cam = R.bgCam; if (!S) return null; // B-11: audit reads the last render view, not the live S cam.updateMatrixWorld();
   const keep = GG.stats.checks, keepH = GG.stats.hits, simT = S.time, frT = GG.frameTime;
   // audit the frame that was actually drawn: its own gap rects (S may have advanced a step after the last draw), minus the guard margins
@@ -742,11 +882,12 @@ function gapAudit() { const R = window.Render3D && Render3D._R, E = KIT.cur; if 
   let checked = 0, viol = 0; const what = []; const m4 = new T.Matrix4(), pp = new T.Vector3(), qq = new T.Quaternion(), ss = new T.Vector3();
   for (const F of E.fauna) { if (!F.m.visible) continue; for (let k = 0; k < F.m.count; k++) { F.m.getMatrixAt(k, m4); m4.decompose(pp, qq, ss); if (ss.x < 0.05) continue; checked++; if (inGap(cam, pp.x, pp.y, pp.z, 6 * ss.x)) { viol++; what.push(F.kind + ":" + k + ":" + ss.x.toFixed(2)); } } }
   if (E.setG && E.setG.visible && (E.setFade == null || E.setFade > 0.05)) { checked++; if (boxInGap(cam, E.setG)) { viol++; what.push("set:" + (E.setFade || 1).toFixed(2)); } }
-  if (E.moteKind !== "snow") { const mp = E.moteP.geometry.getAttribute("position"); for (let k = 0; k < mp.count; k++) { const y = mp.getY(k); if (y < -5e4) continue; checked++; if (inGap(cam, mp.getX(k), y, mp.getZ(k), 1)) { viol++; what.push("mote"); } } }
+  if (E.moteKind !== "snow") { const mp = E.moteP.geometry.getAttribute("position"), ma = E.moteP.geometry.getAttribute("color"); for (let k = 0; k < mp.count; k++) { const y = mp.getY(k); if (y < -5e4 || (ma && ma.getW(k) < 0.05)) continue; checked++; if (inGap(cam, mp.getX(k), y, mp.getZ(k), 1)) { viol++; what.push("mote"); } } }
   GG.stats.checks = keep; GG.stats.hits = keepH; return { world: E.key, checked, viol, what, simAhead: +(simT - frT).toFixed(4), gaps: GG.rects.length, guardChecks: GG.stats.checks, guardHits: GG.stats.hits }; }
 function updateKit(R, S, o, E) {
   const K = E.K, cam = R.bgCam, camx = cam.position.x, t = o.rm ? 0 : (S.time || 0), v = R.view, DC = 760, gy = S.H - S.groundH, lo = R.quality === "low";
-  const visW = d => v.viewW * (DC + d) / DC; gapRects(R, S); const dt = Math.min(0.1, Math.max(0, (S.time || 0) - (E.tPrev == null ? (S.time || 0) : E.tPrev))); E.tPrev = S.time || 0; const fade = (cur, tgt) => o.rm ? tgt : cur + (tgt - cur) * Math.min(1, dt * (tgt < cur ? 24 : 5)); // out fast (~0.1 s, inside the 8 px margin), back in gently
+  const visW = d => v.viewW * (DC + d) / DC; gapRects(R, S); const dt = Math.min(0.1, Math.max(0, (S.time || 0) - (E.tPrev == null ? (S.time || 0) : E.tPrev))); E.tPrev = S.time || 0; const fade = (cur, tgt) => cur + (tgt - cur) * Math.min(tgt < cur ? 0.45 : 0.12, dt * (tgt < cur ? 14 : 5)); // B-12 P2: out over ~0.3 s inside the approach zone, back in gently (also with reduced motion: a fade is not motion); per-frame step capped so a slow frame cannot turn a fade into a pop
+  const guard = (g, hard, soon) => { g = g == null ? 1 : g; if (hard && g > 0.02) { GG.stats.hard++; return 0; } return fade(g, soon ? 0 : 1); }; // safety rule kept: anything still visible inside the gap margin is hidden at once
   for (const r of E.ridges) r.position.x = wrapX(0, camx, r.userData.P);
   for (const sp in E.trees) { const { m, list } = E.trees[sp]; let n = 0;
     for (const tr of list) { if (lo && tr.c > 0.6) continue; const L = tr.L, x = wrapX(tr.bx, camx, L ? L.userData.P * 0.5 : 1800), base = L ? ridgeHeightAt(L, x) - 6 : -gy;
@@ -768,26 +909,27 @@ function updateKit(R, S, o, E) {
       else if (F.kind === "bat") { x = wrapX(a.bx + Math.sin(t * 0.8 + a.ph) * 120 + t * 20, camx, visW(a.d) + 600); y = -gy + a.y + Math.sin(t * 2.3 + a.ph) * 30; rx = Math.sin(t * 16 + a.ph) * 0.7; sc = 1.6; }
       else if (F.kind === "flock") { x = wrapX(a.bx - t * a.v + k * 40, camx, visW(a.d) + 800); y = cam.position.y + a.y * (DC + a.d) / DC * 0.5 + (k % 2) * 30; rx = Math.sin(t * 4 + k) * 0.4; sc = 2.2; }
       else if (F.kind === "floater") { x = wrapX(a.bx + t * 3, camx, visW(a.d) + 600); y = -gy + a.y + Math.sin(t * 0.6 + a.ph) * 20; sc = 2 + Math.sin(t * 1.4 + a.ph) * 0.1; }
-      else if (F.kind === "jumper") { const L = E.lagoon; const cyc = ((t * 0.35 + a.ph) % 1); x = L ? L.position.x - 200 + k * 140 + cyc * 40 : 1e6; const j = cyc < 0.3 ? Math.sin(cyc / 0.3 * Math.PI) : 0; y = (L ? L.position.y : 0) + j * 30 - 4; z = (L ? L.position.z : 0) + 30; rz = (0.15 - cyc) * 6 * (j > 0 ? 1 : 0); sc = j > 0 ? 2 : 0.001; }
-      a.g = inGap(cam, x, y, z, 14 * sc) ? 0 : fade(a.g == null ? 1 : a.g, 1); sc *= a.g < 0.02 ? 0.0001 : a.g; // out: instant (the 8–20 px margin means it happens before the gap edge); back in: gentle
+      else if (F.kind === "jumper") { const L = E.lagoon; const cyc = ((t * 0.35 + a.ph) % 1); x = L ? L.position.x - 200 + k * 140 + cyc * 40 : 1e6; const j = cyc < 0.3 ? Math.sin(cyc / 0.3 * Math.PI) : 0; y = (L ? L.position.y : 0) + j * 30 - 4; z = (L ? L.position.z : 0) + 30; rz = (0.15 - cyc) * 6 * (j > 0 ? 1 : 0); sc = 0.001 + 2 * sstep(j / 0.9); } // B-12 P2: grows out of the water over the rise instead of popping to full size
+      { const hard = inGap(cam, x, y, z, 14 * sc); a.g = guard(a.g, hard, hard || inGap(cam, x, y, z, 14 * sc, true)); } sc *= a.g < 0.02 ? 0.0001 : a.g;
       _e.set(rx, ry, rz); _q.setFromEuler(_e); _p.set(x, y, z); _s.setScalar(sc); _m.compose(_p, _q, _s); F.m.setMatrixAt(k, _m); }
     F.m.count = n; F.m.instanceMatrix.needsUpdate = true; }
   _q.identity();
   E.set(t, camx, lo, cam, v);
   if (E.setG) { E.G.updateMatrixWorld(true); // whole kit group: the set-piece's parent was positioned this frame
-    E.setFade = boxInGap(cam, E.setG, 0.08) ? 0 : fade(E.setFade == null ? 1 : E.setFade, 1); const f = E.setFade; // out: instant, ~20 px before contact (the bg camera also moves vertically with the bird, so a fade-out could not finish in time); back in: gentle
+    { const hard = boxInGap(cam, E.setG, 0.08); E.setFade = guard(E.setFade, hard, hard || boxInGap(cam, E.setG, 0.08, true)); } const f = E.setFade; // B-12 P2: fades out in the approach zone; instant hide only as fallback
     E.setG.visible = f > 0.02; E.setG.traverse(n => { const m = n.material; if (!m) return; if (m.userData.op0 == null) { m.userData.op0 = m.opacity; m.userData.tr0 = m.transparent; } const tr = m.userData.tr0 || f < 0.98; if (m.transparent !== tr) { m.transparent = tr; m.needsUpdate = true; } m.opacity = m.userData.op0 * f; }); }
   const puffs = [[0, 0, 70, 30], [-55, -8, 44, 22], [58, -6, 48, 24], [10, 18, 42, 22], [-20, 10, 36, 18]];
   E.cloudItems.forEach((c, k) => { const x = wrapX(c.bx - t * c.v * 3, camx, visW(c.d) + 1600); for (let j = 0; j < 5; j++) { const p = puffs[j]; _p.set(x + p[0] * c.s, -gy + c.y + p[1] * c.s, -c.d); _s.set(p[2] * c.s, p[3] * c.s, p[2] * 0.5 * c.s); _m.compose(_p, _q, _s); E.clouds.setMatrixAt(k * 5 + j, _m); } });
   E.clouds.instanceMatrix.needsUpdate = true;
-  const mp = E.moteP.geometry.getAttribute("position"), mk = E.moteKind, mn = lo ? E.moteLo : E.motes.length;
-  E.motes.forEach((m, k) => { if (k >= mn) { mp.setXYZ(k, 0, -1e5, 0); return; } let x, y;
-    if (mk === "snow") { x = wrapX(m.bx + Math.sin(t * 0.7 + m.ph) * 14 - t * 4, camx, 1600); y = -gy + 700 - ((m.y + t * 22) % 700); }
-    else if (mk === "fireflies") { x = wrapX(m.bx + Math.sin(t * 0.5 + m.ph) * 30, camx, 1600); y = -gy + 10 + (m.y % 160) + Math.sin(t * 0.9 + m.ph) * 10; }
-    else if (mk === "sparkle") { x = wrapX(m.bx + Math.sin(t * 0.3 + m.ph) * 20, camx, 1600); y = -gy + 10 + ((m.y + t * 6) % 220); }
-    else { x = wrapX(m.bx - t * 14 + Math.sin(t + m.ph) * 10, camx, 1600); y = -gy + 14 + ((m.y - t * 10 + 6000) % 200); }
-    if (mk !== "snow" && inGap(cam, x, y, -m.d, 3)) y = -1e5; mp.setXYZ(k, x, y, -m.d); });
-  mp.needsUpdate = true;
+  const mp = E.moteP.geometry.getAttribute("position"), ma = E.moteP.geometry.getAttribute("color"), mk = E.moteKind, mn = lo ? E.moteLo : E.motes.length;
+  E.motes.forEach((m, k) => { if (k >= mn) { mp.setXYZ(k, 0, -1e5, 0); ma.setW(k, 0); return; } let x, y, u, ba = 1; const span = moteSpan(visW, m.d), fr = q => q - Math.floor(q);
+    if (mk === "snow") { x = wrapX(m.bx + Math.sin(t * 0.7 + m.ph) * 14 - t * 4, camx, span); u = (m.y + t * 22) / 700; y = -gy + 700 - 700 * fr(u); ba = bandA(u); }
+    else if (mk === "fireflies") { x = wrapX(m.bx + Math.sin(t * 0.5 + m.ph) * 30, camx, span); y = -gy + 10 + (m.y % 160) + Math.sin(t * 0.9 + m.ph) * 10; }
+    else if (mk === "sparkle") { x = wrapX(m.bx + Math.sin(t * 0.3 + m.ph) * 20, camx, span); u = (m.y + t * 6) / 220; y = -gy + 10 + 220 * fr(u); ba = bandA(u); }
+    else { x = wrapX(m.bx - t * 14 + Math.sin(t + m.ph) * 10, camx, span); u = (m.y - t * 10 + 6000) / 200; y = -gy + 14 + 200 * fr(u); ba = bandA(u); }
+    if (mk !== "snow") { const hard = inGap(cam, x, y, -m.d, 3); m.g = guard(m.g, hard, hard || inGap(cam, x, y, -m.d, 3, true)); } else m.g = 1;
+    mp.setXYZ(k, x, y, -m.d); ma.setW(k, ba * m.g); });
+  mp.needsUpdate = true; ma.needsUpdate = true;
   if (mk === "fireflies" || mk === "sparkle") E.moteP.material.opacity = o.rm ? 0.75 : 0.55 + 0.3 * Math.abs(Math.sin(t * 1.7));
 }
 
@@ -865,6 +1007,7 @@ function install(API) {
     for (const h of b.hulls) h.visible = R.quality === "high";
     b.root.position.set(B.x, -B.y, 0); b.root.scale.setScalar(B.scale); b.root.rotation.set(0, 0, -B.rot);
     poseSwift(b, B, t, o.rm);
+    b.rig.position.y = b.flyBob || 0; b.rig.rotation.z = b.flyPitch || 0; // B-12 body bob/pitch on the inner rig: the bird root stays exactly on the sim position (D5), visual only
     const gy = S.H - S.groundH, hF = Math.max(0, Math.min(1, 1 - (gy - B.y) / 500));
     R.shadow.visible = !B.menu && hF > 0.02; R.shadow.position.set(B.x, -gy + 0.5, 22); R.shadow.scale.set(30 - 20 * hF, 0.2, 7); R.shadow.material.opacity = 0.22 * hF;
   };
@@ -946,6 +1089,6 @@ function pendBounds() {
 }
 function itemBounds() { const b = STUDIO.bird; return b ? (b.preBake || []) : []; } // extents recorded just before baking (rest pose)
 
-const STUDIO = window.R3D_STUDIO = { VERSION, CFG, PLANS, ITEMS, GEAR_PRESETS, install, makeSwift, equipItem, buildScarf: buildScarfInto, poseSwift, triCount, meshCount,
+const STUDIO = window.R3D_STUDIO = { VERSION, CFG, PLANS, ITEMS, GEAR_PRESETS, install, makeSwift, equipItem, buildScarf: buildScarfInto, poseSwift, triCount, meshCount, FLIGHT_BASE, FLIGHT_BIRD, flightParams, strokeAt,
   pendBounds, itemBounds, GV, PEN, KIT, KITS, GG, gapAudit, wingOutline, active: true };
 })();

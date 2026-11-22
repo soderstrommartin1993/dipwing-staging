@@ -543,6 +543,19 @@ function newGate() {
   for (let i = 0; i < 2; i++) { const p = new T.Mesh(GEO.cyl6, lam("#8a99aa")); g.add(p); e.posts.push(p); }
   e.air = new T.Mesh(GEO.box, new T.MeshBasicMaterial({ color: 0x3fa9e0, transparent: true, opacity: 0.12, depthWrite: false, blending: T.AdditiveBlending }));
   g.add(e.air);
+  // B-14 / B2: pulse gate state is communicated by shape as well as colour.
+  // The paired arrows point outward while the opening grows and inward while it closes.
+  const pulseGlyph = new T.Group(); pulseGlyph.name = "pulse-gate-direction"; pulseGlyph.visible = false;
+  const pulseBack = new T.Mesh(new T.BoxGeometry(22, 14, 1), basic("#1A1433")); pulseBack.position.z = 0;
+  pulseGlyph.add(pulseBack);
+  const pulseArrows = [];
+  for (const side of [-1, 1]) {
+    const shaft = new T.Mesh(new T.BoxGeometry(6, 1.8, 0.9), basic("#FFFFFF"));
+    const head = new T.Mesh(new T.ConeGeometry(2.7, 5.5, 3), basic("#FFFFFF"));
+    pulseGlyph.add(shaft, head); pulseArrows.push({ side, shaft, head });
+  }
+  e.pulseGlyph = { group: pulseGlyph, back: pulseBack, arrows: pulseArrows };
+  g.add(pulseGlyph);
   R.fg.add(g); R.gates.push(e);
   return e;
 }
@@ -570,6 +583,7 @@ function updateGates(S, o) {
     const w = ob.w || 78, x = ob.x, top = ob.gapY - ob.gap / 2, bot = ob.gapY + ob.gap / 2;
     for (const m of e.inner) m.visible = false; for (const m of e.hull) m.visible = false;
     for (const m of e.lamps) m.visible = false; for (const m of e.posts) m.visible = false; e.air.visible = false;
+    if (e.pulseGlyph) e.pulseGlyph.group.visible = false;
     for (const m of e.gloss) m.visible = false; for (const m of e.hull) m.material = rimMat; for (const m of e.halo) m.visible = false;
     if (PAIR[ob.fam]) {
       // identity.js drawGatePair: pillars [x, x+w], bands [x−6, x+w+6] × 22 px at the gap
@@ -586,6 +600,19 @@ function updateGates(S, o) {
       const lz = 33;
       if (top > 0) { const l = e.lamps[0]; l.visible = true; l.material = lampMat; l.scale.setScalar(4.2); l.position.set(x + w / 2 - KX * lz, -(top - 11) + K * lz, lz); }
       if (bot < gy) { const l = e.lamps[1]; l.visible = true; l.material = lampMat; l.scale.setScalar(4.2); l.position.set(x + w / 2 - KX * lz, -(bot + 11) + K * lz, lz); }
+      if (ob.fam === "pulse" && e.pulseGlyph) {
+        const openness = (ob.gap - 130) / Math.max(1, ob.baseGap + ob.amp - 130);
+        const direction = Math.cos((ob.t / ob.period) * Math.PI * 2 + ob.ph) > 0 ? 1 : -1;
+        const glyph = e.pulseGlyph; glyph.group.visible = true;
+        glyph.group.position.set(x + w / 2 - KX * 34, -(top - 11) + K * 34, 34);
+        glyph.back.material.color.set(openness > 0.45 ? "#245D46" : "#713B43");
+        for (const a of glyph.arrows) {
+          const point = direction > 0 ? a.side : -a.side;
+          a.head.position.set(a.side * 7, 0, 1.2);
+          a.head.rotation.z = point > 0 ? -Math.PI / 2 : Math.PI / 2;
+          a.shaft.position.set(a.side * 7 - point * 3.1, 0, 1.0);
+        }
+      }
     } else {
       // identity.js drawGateRails: two 8 px rails at x+1 and x+w−9 with 12×8 bands at the gap (same corridor as corridorHit)
       let k = 4;
@@ -601,7 +628,9 @@ function updateGates(S, o) {
       if (ob.fam === "wind") {
         // wind: the metal posts, pennants and stream arrows stay in the 2D overlay (obstacles.js is not edited on feat/3d);
         // 3D adds only a faint air column behind the gameplay plane
-        e.air.visible = true; e.air.material.color.set(ob.dir < 0 ? 0x3fa9e0 : 0xef7d23);
+        e.air.visible = true;
+        const windRules = window.WIND_RULES_ON === true;
+        e.air.material.color.set(windRules ? (ob.dir < 0 ? "#3FD9A8" : "#F2A33A") : (ob.dir < 0 ? "#3FA9E0" : "#EF7D23"));
         e.air.position.set(x + w / 2, -(S.camY + gy) / 2, -30); e.air.scale.set(w - 22, gy - S.camY, 20);
       }
     }

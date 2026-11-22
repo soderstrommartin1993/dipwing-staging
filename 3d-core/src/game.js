@@ -285,7 +285,14 @@ const store = {
   medal(mode, level) { try { return window.SaveV2 ? SaveV2.getMedal(mode, level) : 0; } catch (e) { return 0; } },
   setMedal(mode, level, stars) {
     if (typeof S !== "undefined" && S.simMode) return 0;
-    try { return window.SaveV2 ? SaveV2.setMedal(mode, level, stars) : 0; } catch (e) { return 0; }
+    try {
+      if (!window.SaveV2) return 0;
+      const before = SaveV2.getCoins();
+      const result = SaveV2.setMedal(mode, level, stars);
+      const paid = Math.max(0, Math.round((SaveV2.getCoins() - before) * 100) / 100);
+      if (paid > 0 && typeof Econ !== "undefined") Econ.noteInstantCoins(paid);
+      return result;
+    } catch (e) { return 0; }
   },
   /* --- progression: avklarade nivåer per läge (NYCKLAR TILLAGDA, gamla orörda) ---
      pfb_cleared_v1 (classic) / pfb_cleared_sky_v1 (sky): {level:1}.
@@ -343,16 +350,25 @@ function econV2() { // idea 3 flag (default on): ?econ=0 or localStorage pfb_eco
     return SafeStorage.get("pfb_econ_v2") !== "0"; } catch (e) { return true; }
 }
 const ECON_V2 = econV2();
-function econR() { try { return ECON_V2 ? window.ECON.rewards : window.ECON.legacy.rewards; } catch (e) { return { perPipe: 2, firstClear: 25 }; } }
+const ADS_MODE = (() => {
+  try { const q = new URLSearchParams(location.search).get("ads");
+    return window.GAME_BUILD && GAME_BUILD.testHooks === true && q === "stub" ? "stub" : "off";
+  } catch (e) { return "off"; }
+})();
+window.ADS_MODE = ADS_MODE; // local simulation only; no SDK, fetch, XHR, external script or network
+window.IAP_ENABLED = false;
+window.SUPPORTER_ENABLED = false;
+function econR() { try { return ECON_V2 ? window.ECON.rewards : window.ECON.legacy.rewards; } catch (e) { return { perPipe: 0, firstClear: 0, dayTiers: [] }; } }
 const Econ = {
   V2: ECON_V2,
-  runEarned: 0,  // fjädrar intjänade under pågående försök (nollställs i showReady)
-  runPipes: 0,
-  unflushed: 0, // Gate C: buffrade fjädrar — lagring skrivs i klump (aldrig per hinder)
+  runEarned: 0,  // Coins intjänade under pågående försök
+  runPipes: 0, runId: null, runContinued: false, runContinueUsed: false,
+  unflushed: 0, // Coins buffras och skrivs via den atomära wallet-ledgern
   unflushedObs: 0, _q: 0, _day: null, _dayBase: 0, _since: 0, _milePaid: null,
-  get perPipe() { try { return econR().perPipe | 0 || 2; } catch (e) { return 2; } },
-  get firstClear() { try { return econR().firstClear | 0 || 25; } catch (e) { return 25; } },
-  get bal() { try { return (window.SaveV2 ? SaveV2.getFeathers() : 0) + (this.unflushed | 0); } catch (e) { return this.unflushed | 0; } },
+  _missionPass: 0, _missionCollect: 0, _missionClear: 0, _flushSeq: 0, _lastDailyReward: 0,
+  get perPipe() { try { return Number(econR().perPipe) || 0; } catch (e) { return 0; } },
+  get firstClear() { try { return Number(econR().firstClear) || 0; } catch (e) { return 0; } },
+  get bal() { try { return (window.SaveV2 ? SaveV2.getCoins() : 0) + this.unflushed; } catch (e) { return this.unflushed; } },
   live() { return !(window.__DW_SIM === true || (typeof S !== "undefined" && S.simMode)); },
   /* daily obstacle bonus: day + count at run start. Within ONE session the day only rolls over after
      real monotonic time reached the next UTC midnight (clock forward without reload gives nothing). */
@@ -370,13 +386,24 @@ const Econ = {
     return SaveV2.dayObstacles(t);
   },
   resetRun() {
-    this.flush(); this.unflushed = 0; this.unflushedObs = 0; this.runEarned = 0; this.runPipes = 0; this._since = 0; this._milePaid = {};
+    this.flush();
+    try { if (window.SaveV2 && SaveV2.cancelContinue) SaveV2.cancelContinue(this.runId); } catch (e) {}
+    try { if (window.SaveV2 && SaveV2.finishRunWalletKeys && this.runId) SaveV2.finishRunWalletKeys(this.runId); } catch (e) {}
+    this.unflushed = 0; this.unflushedObs = 0; this.runEarned = 0; this.runPipes = 0; this._since = 0; this._milePaid = {};
+    this._missionPass = 0; this._missionCollect = 0; this._missionClear = 0; this._flushSeq = 0;
+    this.runContinued = false; this.runContinueUsed = false;
+    this.runId = (this.V2 && this.live() && window.SaveV2 && SaveV2.allocateRunId)
+      ? (SaveV2.allocateRunId(S.runMode || "adventure", S.runSeed >>> 0) ||
+        [S.runMode || "adventure", S.runSeed >>> 0, "fallback", Date.now(), Math.random().toString(36).slice(2, 8)].join(":"))
+      : [S.runMode || "adventure", S.runSeed >>> 0, "sim", S.attempt | 0].join(":");
+    S.runContinued = false; S.continueUsed = false;
+    if (window.PlacedCoins) PlacedCoins.reset();
     if (this.V2 && this.live()) { try { const e = this.econDay(); this._day = e.day; this._dayBase = e.n | 0; } catch (e) { this._day = null; this._dayBase = 0; } }
   },
   /* rate for the k-th obstacle of the day (0-based): 2 / 1 / one per four (quarter accumulator) */
   rateFor(k) {
     if (!this.V2) return this.perPipe;
-    const tiers = econR().dayTiers || [[1e9, 2]];
+    const tiers = econR().dayTiers || [];
     for (const [cap, r] of tiers) if (k < cap) {
       if (r >= 1) return r | 0;
       this._q += r; if (this._q >= 1 - 1e-9) { this._q -= 1; return 1; } return 0;
@@ -398,9 +425,9 @@ const Econ = {
       }
     } catch (e) {}
     this.unflushed += a; this.unflushedObs++; this._since++; // ingen lagring här
-    this.runEarned += a; this.runPipes++;
+    this.runEarned += a; this.runPipes++; this._missionPass++;
     if (a > 0) try {
-      S.popups.push({ x: S.bird.x + 44, y: S.bird.y - 34, t: 0, txt: "+" + a + "🪶", feather: true });
+      S.popups.push({ x: S.bird.x + 44, y: S.bird.y - 34, t: 0, txt: "+" + a + " C", feather: false });
       AudioFX.feather();
       Econ.refreshFeatherUI();
     } catch (e) {}
@@ -410,33 +437,76 @@ const Econ = {
      clear/krasch/paus/meny/flikbyte. Returnerar sparat belopp. */
   flush() {
     if (!this.live()) return 0;
-    const obs = this.unflushedObs | 0; this.unflushedObs = 0;
-    if (obs > 0 && this.V2 && this._day && window.SaveV2) { try { SaveV2.addDayObstacles(obs, this._day); this._dayBase += obs; this._since -= obs; } catch (e) {} }
-    if (!(this.unflushed > 0)) return 0;
+    const obs = this.unflushedObs | 0;
+    if (obs > 0 && this.V2 && this._day && window.SaveV2) {
+      try { SaveV2.addDayObstacles(obs, this._day); this._dayBase += obs; this._since -= obs; this.unflushedObs = 0; } catch (e) {}
+    }
     const n = this.unflushed;
-    this.unflushed = 0;
-    try {
-      if (window.SaveV2) SaveV2.addFeathers(n);
+    if (n > 0) {
+      this._flushSeq++;
+      const r = window.SaveV2 && SaveV2.earnCoins ? SaveV2.earnCoins(n, "run:" + this.runId + ":flush:" + this._flushSeq, "round-earn") : { ok: false };
+      if (r && r.ok) this.unflushed = 0;
+      else return 0;
       this.refreshFeatherUI();
-      return n;
-    } catch (e) { this.unflushed += n; return 0; }
+    }
+    if (this._missionPass || this._missionCollect || this._missionClear) {
+      try {
+        if (this._missionPass) SaveV2.missionProgress("pass", this._missionPass);
+        if (this._missionCollect) SaveV2.missionProgress("collect", this._missionCollect);
+        if (this._missionClear) SaveV2.missionProgress("clear", this._missionClear);
+        this._missionPass = this._missionCollect = this._missionClear = 0;
+      } catch (e) {}
+    }
+    return n;
+  },
+  noteInstantCoins(amount) {
+    const n = Number(amount) || 0; if (n <= 0) return;
+    this.runEarned = Math.round((this.runEarned + n) * 100) / 100;
+    this.refreshFeatherUI();
+  },
+  mission(event, count) {
+    const n = Math.max(0, Math.floor(Number(count) || 0));
+    if (event === "pass") this._missionPass += n;
+    else if (event === "collect") this._missionCollect += n;
+    else if (event === "clear") this._missionClear += n;
+  },
+  missionState() { try { return SaveV2.missionState(); } catch (e) { return { day: null, list: [] }; } },
+  claimMission(id) {
+    try { const r = SaveV2.claimMission(id); if (r.ok) { this.noteInstantCoins(r.reward); this.refreshFeatherUI(); } return r; } catch (e) { return { ok: false }; }
+  },
+  adsStubEnabled() { return ADS_MODE === "stub"; },
+  claimDoubleRun() {
+    if (!this.adsStubEnabled() || !this.runId || this.runEarned <= 0 || (typeof S !== "undefined" && (S.state === "playing" || S.state === "dying")) || S.hardcore || S.runMode === "hardcore") return { ok: false, reason: "off" };
+    const r = SaveV2.markRunDoubleClaim(this.runId, this.runEarned);
+    if (r.ok) {
+      try { const k = "pfb_ads_stub_log"; const rows = JSON.parse(SafeStorage.get(k) || "[]"); rows.push({ type: "double-run", runId: this.runId, amount: this.runEarned, at: Date.now() }); SafeStorage.set(k, JSON.stringify(rows.slice(-100))); } catch (e) {}
+      this.refreshFeatherUI();
+    }
+    return r;
+  },
+  claimDoubleDaily() {
+    if (!this.adsStubEnabled()) return { ok: false, reason: "off" };
+    const d = SaveV2.dailyAdState();
+    const r = SaveV2.claimDailyAdBonus(d.day, d.reward);
+    if (r.ok) { try { const k = "pfb_ads_stub_log"; const rows = JSON.parse(SafeStorage.get(k) || "[]"); rows.push({ type: "double-daily", day: d.day, amount: d.reward, at: Date.now() }); SafeStorage.set(k, JSON.stringify(rows.slice(-100))); } catch (e) {} this.refreshFeatherUI(); }
+    return r;
   },
   /* Förstaclear-bonus. V2: once per LEVEL across modes (E5). Returnerar beloppet (0 om redan tagen eller sim). */
   awardFirstClear() {
     if (!this.live()) return 0;
     try {
-      const fresh = this.V2 ? SaveV2.claimFirstClearLevel(S.mode, S.level) : SaveV2.claimBonus(S.mode, S.level);
-      if (window.SaveV2 && fresh) {
-        SaveV2.addFeathers(this.firstClear);
-        if (window.Analytics) Analytics.emit("firstclear_bonus", { level: S.level, mode: S.mode, amount: this.firstClear });
+      const amount = this.V2 ? SaveV2.claimFirstClearLevel(S.mode, S.level) : (SaveV2.claimBonus(S.mode, S.level) ? this.firstClear : 0);
+      if (window.SaveV2 && amount > 0) {
+        this.noteInstantCoins(amount);
+        if (window.Analytics) Analytics.emit("firstclear_bonus", { level: S.level, mode: S.mode, amount });
         this.refreshFeatherUI();
-        return this.firstClear;
+        return amount;
       }
     } catch (e) {}
     return 0;
   },
   clockSkew() { try { return !!(window.SaveV2 && SaveV2.dailyState().clockSkew); } catch (e) { return false; } },
-  dailyTrack() { try { return (ECON_V2 ? window.ECON.dailyTrack : window.ECON.legacy.dailyTrack).slice(); } catch (e) { return [50, 60, 80, 100, 130, 160, 300]; } },
+  dailyTrack() { try { return (ECON_V2 ? window.ECON.dailyTrack : window.ECON.legacy.dailyTrack).slice(); } catch (e) { return []; } },
   dailyRewardFor(claimIndex) {
     const t = this.dailyTrack();
     return t[((Math.max(1, claimIndex | 0) - 1) % t.length + t.length) % t.length];
@@ -457,14 +527,15 @@ const Econ = {
     if (!this.live()) return { ok: false, sim: true };
     try {
       if (!this.sessionAllowsClaim()) return { ok: false, reason: "session" };
-      const r = SaveV2.claimDaily();
+      const st = SaveV2.dailyState(), index = (st.claimedTotal | 0) + 1;
+      const reward = this.dailyRewardFor(index);
+      const r = SaveV2.claimDaily(undefined, reward);
       if (!r.ok) return r;
-      this._sessClaimAt = performance.now();
-      const reward = this.dailyRewardFor(r.claimIndex);
-      SaveV2.addFeathers(reward);
+      this._sessClaimAt = performance.now(); this._lastDailyReward = reward;
+      this.noteInstantCoins(reward);
       this.refreshFeatherUI();
       if (window.Analytics) Analytics.emit("daily_claim", { reward, claimIndex: r.claimIndex });
-      return { ok: true, reward, claimIndex: r.claimIndex };
+      return { ok: true, reward, claimIndex: r.claimIndex, prestige: r.prestige || 0 };
     } catch (e) { return { ok: false }; }
   },
   birdDefs() { try { return window.ECON.BIRDS.slice(); } catch (e) { return [{ id: "sunny", cost: 0 }]; } },
@@ -516,6 +587,22 @@ const Econ = {
     if (r.ok) { this.refreshFeatherUI(); if (window.Analytics) Analytics.emit("feather_spend", { what: slot, id, cost: def.cost }); }
     return r.ok ? { ok: true, cost: def.cost } : r;
   },
+  purchaseShopItem(kind, slot, id, price, purchaseId) {
+    if (!this.live()) return { ok: false, sim: true };
+    const defs = kind === "bird" ? this.birdDefs() : this.cosmeticDefs(slot);
+    const def = defs.find(x => x && x.id === id);
+    if (!def || def.prestige || def.secret || def.unlockCondition || !(Number(price) > 0)) return { ok: false, reason: "not-for-sale" };
+    const currency = def.currency === "F" ? "F" : "C";
+    const r = SaveV2.purchaseShopItem(kind, slot, id, currency, Number(price), purchaseId);
+    if (r.ok) { this._cosEq = null; if (kind === "bird") { try { S.birdSkin = id; } catch (e) {} } this.refreshFeatherUI(); }
+    return r;
+  },
+  undoShopPurchase(purchaseId) {
+    if (!this.live()) return { ok: false, sim: true };
+    const r = SaveV2.undoShopPurchase(purchaseId, Date.now());
+    if (r.ok) { this._cosEq = null; this.refreshFeatherUI(); }
+    return r;
+  },
   equipCosmetic(slot, id) { if (!this.live()) return false; try { const ok = SaveV2.equipCosmetic(slot, id); this._cosEq = null; return ok; } catch (e) { return false; } },
   _cosEq: null,
   cosEquipped() { // cached; read from the save at most once per change (never per frame)
@@ -539,8 +626,9 @@ const Econ = {
   refreshFeatherUI() {
     try {
       const b = this.bal;
-      const fp = $("featherPill"); if (fp) fp.textContent = "🪶 " + b;
-      const mb = $("menuFeathers"); if (mb) mb.textContent = b;
+      const fp = $("featherPill"); if (fp) fp.textContent = "🪙 " + b + " C";
+      const mb = $("menuFeathers"); if (mb) mb.textContent = b + " C";
+      const pf = $("menuPrestige"); if (pf) pf.textContent = (SaveV2.getPrestigeFeathers() | 0) + " F";
       const cn = $("clockNotice"); if (cn) cn.hidden = !this.clockSkew();
       const db = $("dailyBtn");
       if (db) {
@@ -554,7 +642,133 @@ const Econ = {
       }
     } catch (e) {}
   }
+ };
+/* Omgång 5: visual-only placed Coins. This layer never writes into S, Sim, score, RNG or Daily hashes. */
+const PlacedCoins = {
+  list: [], lastGroup: [], seenSpawn: 0, desired: 0, scheduled: [], placed: 0, runId: null,
+  scheduleCursor: 0, pendingRegular: 0, riskScheduled: 0, riskQueued: false, pendingRisk: false, riskPlaced: false,
+  _hash(n) { let x = (Number(n) >>> 0) || 0x9e3779b9; x ^= x >>> 16; x = Math.imul(x, 0x7feb352d); x ^= x >>> 15; x = Math.imul(x, 0x846ca68b); return (x ^ (x >>> 16)) >>> 0; },
+  reset() {
+    this.list = []; this.lastGroup = []; this.seenSpawn = 0; this.placed = 0;
+    this.scheduleCursor = 0; this.pendingRegular = 0; this.riskQueued = false; this.pendingRisk = false; this.riskPlaced = false;
+    this.runId = String(Econ.runId || "run");
+    const cfg = window.ECON && ECON.placedCoins || {};
+    if (S.runMode === "scout" || S.runMode === "endless") { this.desired = 0; this.scheduled = []; this.riskScheduled = 0; return; }
+    const seed = this._hash(S.runSeed ^ 0x51ed270b);
+    // `desired` is the count of ordinary 1-C Coins. The 5-C risk Coin is additional.
+    this.desired = (cfg.fixedMin | 0) + (seed % Math.max(1, (cfg.fixedMax | 0) - (cfg.fixedMin | 0) + 1));
+    const target = Math.max(8, (S.cfg && S.cfg.target) || (S.dailyInfo && S.dailyInfo.target) || 20);
+    const plan = typeof cfg.schedule === "function" ? cfg.schedule(target, this.desired) : null;
+    this.scheduled = plan ? plan.ordinaryGroups.slice() : Array.from({length:this.desired}, (_,i)=>Math.max(2, Math.min(target, Math.ceil((i+1)*target/(this.desired+1))))).sort((a,b)=>a-b);
+    this.riskScheduled = plan ? plan.riskGroup : Math.max(2, Math.min(target, Math.ceil(target * 0.7)));
+  },
+  clearForContinue() { this.list = []; this.lastGroup = []; this.seenSpawn = 0; },
+  onSpawn(S, group) {
+    if (S.simMode || S.runMode === "scout" || !group || !group.length) return;
+    const n = S.spawnCount | 0;
+    const prev = this.lastGroup;
+    this.lastGroup = group.slice(); this.seenSpawn = n;
+    let slots = [];
+    if (S.runMode === "endless") {
+      const cfg = window.ECON.placedCoins || {}, every = Math.max(4, cfg.endlessEvery | 0 || 9);
+      const h = this._hash((S.runSeed >>> 0) ^ Math.imul(n, 0x9e3779b1));
+      const should = n > 1 && n % every === 0 && (h % 3 === 0);
+      if (!should) return;
+      slots = [{ risk: ((h >>> 4) % 7 === 0) }];
+    } else {
+      while (this.scheduleCursor < this.scheduled.length && this.scheduled[this.scheduleCursor] <= n) {
+        this.pendingRegular++; this.scheduleCursor++;
+      }
+      if (!this.riskQueued && n >= this.riskScheduled) { this.pendingRisk = true; this.riskQueued = true; }
+      // At most two visual pickups per gap; any excess remains queued for the next safe gap.
+      const count = Math.min(2, this.pendingRegular + (this.pendingRisk ? 1 : 0));
+      if (!count) return;
+      if (this.pendingRisk) { slots.push({ risk: true }); this.pendingRisk = false; }
+      while (slots.length < count && this.pendingRegular > 0) { slots.push({ risk: false }); this.pendingRegular--; }
+    }
+    if (!prev.length) {
+      if (S.runMode !== "endless") {
+        for (const slot of slots) { if (slot.risk) this.pendingRisk = true; else this.pendingRegular++; }
+      }
+      return;
+    }
+    const left = prev[prev.length - 1], right = group[0];
+    if (!left || !right || left.fam === "weave" || right.fam === "weave") {
+      if (S.runMode !== "endless") for (const slot of slots) { if (slot.risk) this.pendingRisk = true; else this.pendingRegular++; }
+      return;
+    }
+    const cfg = window.ECON.placedCoins || {}, radius = Number(cfg.coinRadius || 9), edge = Number(cfg.minEdgeClearance || 18);
+    const gapLeft = left.x + left.w, gapRight = right.x, gapWidth = gapRight - gapLeft;
+    const minWidth = radius * 2 + edge * 2 + Math.max(0, slots.length - 1) * (radius * 2 + edge);
+    const topL = left.gapY - left.gap / 2 + radius + 10, botL = left.gapY + left.gap / 2 - radius - 10;
+    const topR = right.gapY - right.gap / 2 + radius + 10, botR = right.gapY + right.gap / 2 - radius - 10;
+    const top = Math.max(topL, topR), bottom = Math.min(botL, botR);
+    if (gapWidth < minWidth || bottom <= top) {
+      if (S.runMode !== "endless") for (const slot of slots) { if (slot.risk) this.pendingRisk = true; else this.pendingRegular++; }
+      return;
+    }
+    for (let i = 0; i < slots.length; i++) {
+      const slot = slots[i], fx = (i + 1) / (slots.length + 1);
+      const id = "spawn-" + n + "-" + (slot.risk ? "risk" : "regular") + "-" + (this.placed + i + 1);
+      const sign = slot.risk ? (this._hash((S.runSeed >>> 0) ^ Math.imul(n, 0x85ebca6b)) & 1 ? 1 : -1) : 0;
+      const center = left.gapY + (right.gapY - left.gapY) * fx;
+      const span = Math.min((bottom - top) * Number(cfg.riskSafeFraction || 0.24), radius * Number(cfg.riskMaxOffsetRadius || 2.8));
+      const y = center + sign * span;
+      this.list.push({ id, x: gapLeft + gapWidth * fx, fx, y, radius,
+        value: slot.risk ? Number(cfg.riskValue || 0) : Number(cfg.fixedValue || 0),
+        risk: slot.risk, riskOffsetSign: sign, left, right, collected: false, missed: false });
+      if (S.runMode !== "endless") {
+        if (slot.risk) this.riskPlaced = true;
+        else this.placed++;
+      }
+    }
+  },
+  update() {
+    if (S.simMode || S.state !== "playing" || !this.list.length) return;
+    const br = 11, bx = S.bird.x, by = S.bird.y;
+    for (const c of this.list) {
+      if (c.collected || c.missed) continue;
+      const lx = c.left.x + c.left.w, rx = c.right.x;
+      c.x = lx + (rx - lx) * (Number.isFinite(c.fx) ? c.fx : 0.5);
+      const frac = Number.isFinite(c.fx) ? c.fx : 0.5;
+      const gl = c.left.gapY, gr = c.right.gapY, center = gl + (gr - gl) * frac;
+      if (c.riskOffsetSign) {
+        const cfg = window.ECON.placedCoins || {}, radius = c.radius;
+        const top = Math.max(c.left.gapY - c.left.gap / 2 + radius + 10, c.right.gapY - c.right.gap / 2 + radius + 10);
+        const bottom = Math.min(c.left.gapY + c.left.gap / 2 - radius - 10, c.right.gapY + c.right.gap / 2 - radius - 10);
+        c.y = center + c.riskOffsetSign * Math.min(Math.max(0, bottom - top) * Number(cfg.riskSafeFraction || 0.24), radius * Number(cfg.riskMaxOffsetRadius || 2.8));
+      } else c.y = center;
+      const dx = bx - c.x, dy = by - c.y;
+      if (dx * dx + dy * dy <= (br + c.radius) * (br + c.radius)) {
+        const day = (Econ.econDay && Econ.econDay().day) || SaveV2.utcDateStr(new Date());
+        const r = SaveV2.claimPlacedCoin(day, this.runId, c.id, c.value);
+        c.collected = true;
+        if (r.ok) {
+          Econ.noteInstantCoins(r.delta);
+          Econ.mission("collect", 1);
+          S.popups.push({ x: c.x, y: c.y - 18, t: 0, txt: "+" + r.delta + " C", feather: false });
+          AudioFX.score();
+        }
+      } else if (c.x < bx - 48) c.missed = true;
+    }
+    this.list = this.list.filter(c => !c.collected && !c.missed);
+  },
+  draw(c) {
+    if (S.simMode || S.state !== "playing") return;
+    for (const p of this.list) {
+      if (p.collected || p.missed) continue;
+      c.save(); c.translate(p.x, p.y);
+      c.globalAlpha = 0.96; c.fillStyle = p.risk ? "#F6A83B" : "#FFD45A";
+      c.strokeStyle = "rgba(64,43,24,.9)"; c.lineWidth = 2;
+      c.beginPath(); c.arc(0, 0, p.radius, 0, Math.PI * 2); c.fill(); c.stroke();
+      c.fillStyle = "#8B5418"; c.font = "bold 11px system-ui"; c.textAlign = "center"; c.textBaseline = "middle";
+      c.fillText("C", 0, 0.5);
+      if (p.risk) { c.strokeStyle = "#FFF4C8"; c.lineWidth = 1.4; c.beginPath(); c.arc(0,0,p.radius-3,0,Math.PI*2); c.stroke(); }
+      c.restore();
+    }
+  }
 };
+window.PlacedCoins = PlacedCoins;
 /* ============================================================
    LJUD — Audio engine v2 (phase 1) + sound packs.
    ENGINE: master → (glide: limiter) → out; sfx + music(duck) buses; master/SFX/music volumes;
@@ -944,6 +1158,7 @@ const S = {
   prevGapY: null, flapLock: 0, playStartT: 0,
   mode: "classic",            // classic = ren skillnad (Phase 0), sky = framtida progression
   runMode: "adventure",       // Gate D: 'adventure' (målbaserad) | 'endless' (oändlig)
+  runContinued: false, continueUsed: false, continueReady: false, hardcore: false,
   diff: null,                 // Gate D: endless svårighets-pseudonivå (null = följ S.level)
   overdrive: false,           // Gate D: fortsatt runda efter clear (medaljjakt)
   runSeed: 1, attempt: 0,     // deterministisk sekvens per försök (samma seed ⇒ samma hinder)
@@ -1055,7 +1270,12 @@ window.addEventListener("resize", resize);
 function autoPause() { if (S.state === "playing" || S.state === "countdown") doPause(); }
 document.addEventListener("visibilitychange", () => { if (document.hidden) autoPause(); });
 window.addEventListener("blur", autoPause);
-window.addEventListener("pagehide", autoPause);
+window.addEventListener("pagehide", () => {
+  // Persist a started Daily attempt before the page is hidden/unloaded. The run id makes this idempotent.
+  try { if (typeof Daily !== "undefined" && Daily && Daily.markInterrupted) Daily.markInterrupted("pagehide"); } catch (e) {}
+  try { if (window.Econ && Econ.flush) Econ.flush(); } catch (e) {}
+  autoPause();
+});
 
 /* ---------- UI-hjälp ---------- */
 function hideAll() {
@@ -1063,8 +1283,16 @@ function hideAll() {
   tutorial.hidden = true;
 }
 function showMenu() {
+  resetCrashMarks();
+  // Leaving the continuation-ready card cancels the reservation without charging Coins.
+  try { if (window.SaveV2 && SaveV2.cancelContinue) SaveV2.cancelContinue(Econ.runId); } catch (e) {}
+  if (S.continueReady) {
+    S.continueReady = false; S.continueUsed = false; S.runContinued = false;
+    Econ.runContinued = false; Econ.runContinueUsed = false;
+  }
+  Econ.flush(); // Gate C: spara ev. buffrade Coins innan vyn byts
+  try { if (window.SaveV2 && SaveV2.finishRunWalletKeys && Econ.runId) SaveV2.finishRunWalletKeys(Econ.runId); } catch (e) {}
   S.state = "menu";
-  Econ.flush(); // Gate C: spara ev. buffrade fjädrar innan vyn byts
   hideAll(); menuOv.hidden = false; hud.hidden = true;
   refreshMenu();
 }
@@ -1088,6 +1316,7 @@ function refreshMenu() {
     if (wsel && $("menuSubtitle")) $("menuSubtitle").textContent = I18N.t("menu_subtitle", { name: wsel.name, icon: wsel.icon, tag: wsel.tag });
   } catch (e) {}
   syncModeBtns();
+  try { applyShopTheme(); } catch (e) {}
 }
 function medalFor(score, target) {
   if (score >= target) return "🏆";
@@ -1112,17 +1341,21 @@ const TIPS = [
   "Tips: sikta på öppningens mitt, inte kanten."
 ];
 
-function showReady(level) {
+function showReady(level, seedOverride) {
   setLevel(level);
+  syncCrashMarksLevel(level);
+  resetCrashMarkDistance(); // ny attempt: tidigare märken placeras om från banstart
   S.runMode = "adventure"; S.diff = level; S.overdrive = false; S.odBaseTarget = null; // Gate D
-  S.state = "ready";
+  S.continueReady = false; S.state = "ready";
+  if ($("continueReadyCostNote")) $("continueReadyCostNote").hidden = true;
   S.score = 0; S.pipes = []; S.particles = []; S.popups = [];
   S.camX = 0; S.shake = 0; S.prevGapY = null; // Gate A: null = mittenstart (0 kläms mot taket)
   S.ptime = 0; S.__stepIdx = 0; LIVE_ACC.acc = 0; // Gate B: fryst fysikklocka per försök
   S.spawnLastFam = null; S.spawnCount = 0; S.simResult = null;
   // nytt försök ⇒ ny deterministisk sekvens (loggas för replay/daglig utmaning)
   S.attempt++;
-  S.runSeed = (((Math.random() * 0xFFFFFFFF) >>> 0) ^ (S.attempt * 2654435761) ^ (S.level * 40503)) >>> 0;
+  const forcedSeed = window.GAME_BUILD && GAME_BUILD.testHooks === true && seedOverride != null ? Number(seedOverride) : NaN;
+  S.runSeed = Number.isFinite(forcedSeed) ? (forcedSeed >>> 0) : ((((Math.random() * 0xFFFFFFFF) >>> 0) ^ (S.attempt * 2654435761) ^ (S.level * 40503)) >>> 0);
   S.lastOfficialSeed = S.runSeed; // E9: the scout run can replay exactly this course
   window.RNG.reset(S.runSeed);
   resetBird();
@@ -1190,7 +1423,8 @@ function setEndless() {
 }
 function showEndless() {
   setEndless();
-  S.state = "ready";
+  resetCrashMarks();
+  S.state = "ready"; S.continueReady = false;
   S.score = 0; S.pipes = []; S.particles = []; S.popups = [];
   S.camX = 0; S.shake = 0; S.prevGapY = null;
   S.ptime = 0; S.__stepIdx = 0; LIVE_ACC.acc = 0;
@@ -1249,6 +1483,25 @@ function resumeOverdrive() {
 function startPlaying() {
   if (S.state !== "ready") return;
   if (S.rotateBlocked) return; // A2: rotationsspärr
+  const resumedCalmly = !!S.continueReady;
+  if (resumedCalmly) {
+    // Keep pendingCont until this explicit start tap. A menu choice or reload cancels it for free.
+    const committed = window.SaveV2 && SaveV2.commitContinue ? SaveV2.commitContinue(Econ.runId) : { ok: false, reason: "save-unavailable" };
+    if (!committed.ok) {
+      try { Econ.refreshFeatherUI(); } catch (e) {}
+      try { if (window.SaveV2 && SaveV2.cancelContinue) SaveV2.cancelContinue(Econ.runId); } catch (e) {}
+      S.continueReady = false; S.continueUsed = false; S.runContinued = false;
+      Econ.runContinued = false; Econ.runContinueUsed = false;
+      syncModeBtns(); showGameOver(); return;
+    }
+    S.runContinued = true; S.continueUsed = true;
+    Econ.runContinued = true; Econ.runContinueUsed = true;
+    if (S.runMode === "daily") S.dailyEnded = false; // allow the resumed attempt to record continued-complete
+    Econ.refreshFeatherUI();
+  }
+  S.continueReady = false;
+  if ($("continueReadyCostNote")) $("continueReadyCostNote").hidden = true;
+  try { if (window.SaveV2 && SaveV2.markShopPurchasesUsed) SaveV2.markShopPurchasesUsed(); } catch (e) {}
   S.state = "playing";
   S.playStartT = S.time;
   AudioFX.levelStart(); // v2 (glide only)
@@ -1262,7 +1515,7 @@ function startPlaying() {
   }
   hideCoachTip(true); // coachen har gjort sitt när spelet startar
   if (window.Analytics && S.runMode !== "daily" && S.runMode !== "scout") Analytics.emit("level_start", { level: S.level, mode: S.mode, seed: S.runSeed });
-  flap();
+  if (!resumedCalmly) flap();
 }
 
 function updateHUD() {
@@ -1323,6 +1576,7 @@ function syncModeBtns() {
     for (const id of [a, b]) {
       const el = $(id);
       if (!el) continue;
+      if (id === b) el.hidden = !!S.continueReady; // a continued run cannot switch Classic/Sky at its ready card
       const on = S.mode === m;
       el.style.background = on ? "linear-gradient(180deg,#ffd45e,#ffb830)" : "";
       el.style.borderColor = on ? "#2b2118" : "";
@@ -1368,29 +1622,33 @@ function doResume() {
 function gameOver(hitGround) {
   if (S.state !== "playing") return;
   if (S.simMode) { S.simResult = S.simResult || (hitGround ? "crash-ground" : "crash"); return; }
-  if (S.runMode === "daily") Daily.end(false); // before anything moves: the receipt hash must match the Sim replay
   S.state = "dying";
   S.deathT = 0;
   AudioFX.hit();
   flash(0.7);
   if (!reducedMotion()) { S.shake = 14; S.shakeT = 0.45; } // a11y: ingen skakning i reducerat läge
   burst(S.bird.x, S.bird.y, 14, true);
+  addCrashMark(S.bird.x, S.bird.y, hitGround); // camera-anchored visual trace; never enters sim-core
   if (!hitGround) AudioFX.fall();
   tutorial.hidden = true;
 }
 
 function showGameOver() {
+  settleCrashMarks(); // avsluta eventuella visuella fall när game-over-vyn visas
   S.state = "gameover";
   AudioFX.gameOver(); // v2 (glide only): game-over stinger; a new record replaces it below
-  Econ.flush(); // Gate C: krasch sparar intjänade fjädrar (ingen bonus vid krasch)
-  if (S.runMode === "daily") { hud.hidden = true; return Daily.open(); } // own result panel, no revive, no records
+  Econ.flush(); // Gate C: krasch sparar intjänade Coins (ingen bonus vid krasch)
+  if (S.runMode === "daily" && !S.dailyEnded) Daily.end(false);
   if (S.runMode === "endless") return showEndlessOver();
-  if (S.overdrive) return showOverdriveOver();
-  const isBest = store.setBestFor(S.mode, S.level, S.score);
+  if (S.overdrive) return showOverdriveOver(); // Overdrive flow intentionally unchanged
+  if (S.runContinued || S.continueUsed || S.hardcore || S.runMode === "hardcore" || S.runMode === "scout") {
+    try { if (window.SaveV2 && SaveV2.finishRunWalletKeys && Econ.runId) SaveV2.finishRunWalletKeys(Econ.runId); } catch (e) {}
+  }
+  const isBest = (S.runContinued || S.runMode === "daily") ? false : store.setBestFor(S.mode, S.level, S.score);
   hideAll(); overOv.hidden = false; hud.hidden = true;
   $("overScore").textContent = S.score;
-  $("overBest").textContent = store.bestFor(S.mode, S.level) + (isBest ? I18N.t("new_best") : "");
-  $("overTarget").textContent = S.cfg.target;
+  $("overBest").textContent = (S.runMode === "daily" ? ((Daily.load().best && Daily.load().best.score) || 0) : store.bestFor(S.mode, S.level)) + (isBest ? I18N.t("new_best") : "") + (S.runContinued ? " ⟲" : "");
+  $("overTarget").textContent = S.runMode === "daily" ? S.dailyInfo.target : S.cfg.target;
   if ($("overScoutBtn")) $("overScoutBtn").hidden = !Scout.offered(S.level); // E9: optional, never pushed
   $("medal").textContent = medalEmoji(S.score, S.cfg.target);
   $("overKicker").textContent = S.score >= S.cfg.target * 0.7 ? I18N.t("over_kicker_close") : I18N.t("over_kicker_over");
@@ -1406,10 +1664,52 @@ function showGameOver() {
       else oe.hidden = true;
     }
   } catch (e) {}
-  if (window.Analytics) Analytics.emit("crash", { level: S.level, score: S.score, mode: S.mode });
+  syncContinueUI();
+  if (window.Analytics) Analytics.emit("crash", { level: S.level, score: S.score, mode: S.mode, continued: !!S.runContinued });
   if (window.Analytics && S.overEarned > 0) Analytics.emit("feather_run", { level: S.level, mode: S.mode,
     result: "crash", pipes: Econ.runPipes, pipeFeathers: S.overEarned, bonus: 0, earned: S.overEarned });
 }
+function syncContinueUI() {
+  const film = $("continueFilmBtn"), coin = $("continueCoinBtn"), bal = $("continueBalance"), status = $("continueStatus"), dbl = $("doubleRunBtn");
+  const doubleClaimed = !!(window.SaveV2 && SaveV2.hasRunDoubleClaim && SaveV2.hasRunDoubleClaim(Econ.runId));
+  const blocked = !!(S.hardcore || S.runMode === "hardcore" || S.runMode === "scout" || S.continueUsed || doubleClaimed);
+  const canStub = window.ADS_MODE === "stub" && window.GAME_BUILD && GAME_BUILD.testHooks === true;
+  if (film) { film.hidden = !canStub || blocked; film.textContent = canStub ? I18N.t("continue_watch_film") + " · " + I18N.t("test_mode_no_real_ad") : ""; }
+  const price = Number(ECON.currency && ECON.currency.continueCost) || 0;
+  const balance = window.SaveV2 ? SaveV2.getCoins() : 0;
+  if (coin) { coin.hidden = blocked; coin.disabled = balance < price; coin.textContent = (document.documentElement.lang === "en" ? "Continue · " : "Fortsätt · ") + price + " C"; }
+  if (bal) bal.textContent = (document.documentElement.lang === "en" ? "Balance: " : "Saldo: ") + balance + " C" + (S.runContinued ? " · ⟲" : "");
+  if (status) status.textContent = blocked ? (doubleClaimed ? (document.documentElement.lang === "en" ? "Round doubled · restart to fly again" : "Rundans Coins dubblerade · starta om för att flyga igen") : S.runContinued ? (document.documentElement.lang === "en" ? "Continued run ⟲ · another continue is unavailable" : "Fortsatt runda ⟲ · ingen andra fortsättning") : "") : "";
+  if (dbl) { dbl.hidden = !canStub || !(Econ.runEarned > 0) || S.state === "playing" || S.state === "dying" || S.hardcore || S.runMode === "hardcore" || S.runMode === "scout" || doubleClaimed; dbl.textContent = I18N.t("double_run_coins"); }
+}
+function continueAfterCrash(method) {
+  if (S.hardcore || S.runMode === "hardcore" || S.runMode === "scout" || S.continueUsed || !Econ.runId || (SaveV2.hasRunDoubleClaim && SaveV2.hasRunDoubleClaim(Econ.runId))) return { ok: false, reason: "blocked" };
+  const prep = SaveV2.prepareContinue(Econ.runId, method);
+  if (!prep.ok) { const st = $("continueStatus"); if (st) st.textContent = prep.reason === "funds" ? (document.documentElement.lang === "en" ? "Not enough Coins" : "Du har inte tillräckligt med Coins") : "Fortsättning kunde inte startas"; syncContinueUI(); return prep; }
+  // Reserve only. The 150 C debit is committed in startPlaying() after the player taps START.
+  S.continueReady = true; S.continueUsed = true;
+  S.pipes = []; S.particles = []; S.popups = []; S.prevGapY = null; S.spawnLastFam = null;
+  if (window.PlacedCoins) PlacedCoins.clearForContinue();
+  S.bird.x = S.W * TUNE.birdXfrac; S.bird.y = clamp(S.H * 0.44, 120, S.H - S.groundH - 50);
+  S.bird.vy = 0; S.bird.rot = 0; S.bird.alive = true; S.deathT = 0;
+  S.state = "ready";
+  hideAll(); readyOv.hidden = false; hud.hidden = false; tutorial.hidden = true;
+  readyPill.textContent = I18N.t("continue_ready_pill");
+  readyTitle.textContent = I18N.t("continue_ready_title");
+  readyDesc.textContent = I18N.t("continue_ready_desc");
+  if ($("continueReadyCostNote")) $("continueReadyCostNote").hidden = false;
+  readyBtn.innerHTML = I18N.t("continue_ready_btn");
+  syncModeBtns(); updateHUD(); AudioFX.click();
+  return { ok: true, balance: SaveV2.getCoins(), method, ready: true, pending: true };
+}
+function finishRunAndRestart() {
+  if (S.runMode === "daily" && !S.dailyEnded) Daily.end(false);
+  if (S.runMode === "daily") return Daily.showReady();
+  if (S.runMode === "endless") return showEndless();
+  return showReady(S.level);
+}
+function finishDailyBeforeLeave() { if (S.runMode === "daily" && !S.dailyEnded) Daily.end(false); }
+
 /* Gate D: endless-krasch — egen rekordtabell, omedelbar omstart. */
 function endlessMedal(score) {
   if (score >= 100) return "🏆";
@@ -1419,12 +1719,17 @@ function endlessMedal(score) {
   return "🐣";
 }
 function showEndlessOver() {
-  const isBest = store.setEndlessBest(S.mode, S.score);
+  const isBest = S.runContinued ? false : store.setEndlessBest(S.mode, S.score);
+  if (S.runContinued && window.SaveV2) SaveV2.setEndlessContBest(S.mode, S.score);
+  // First crash may still be continued; the final continued crash closes this run's wallet scope.
+  if (S.runContinued || S.continueUsed || S.hardcore) {
+    try { if (window.SaveV2 && SaveV2.finishRunWalletKeys && Econ.runId) SaveV2.finishRunWalletKeys(Econ.runId); } catch (e) {}
+  }
   S.endlessIsBest = !!isBest;
   if (isBest) AudioFX.record();
   hideAll(); overOv.hidden = false; hud.hidden = true;
   $("overScore").textContent = S.score;
-  $("overBest").textContent = store.endlessBest(S.mode) + (isBest ? I18N.t("new_best") : "");
+  $("overBest").textContent = store.endlessBest(S.mode) + (isBest ? I18N.t("new_best") : "") + (S.runContinued ? " ⟲" : "");
   $("overTarget").textContent = "∞";
   $("medal").textContent = endlessMedal(S.score);
   $("overKicker").textContent = isBest ? I18N.t("endless_newbest") : I18N.t("endless_over");
@@ -1439,15 +1744,16 @@ function showEndlessOver() {
       else oe.hidden = true;
     }
   } catch (e) {}
-  if (window.Analytics) Analytics.emit("endless_crash", { score: S.score, mode: S.mode, best: isBest });
+  syncContinueUI();
+  if (window.Analytics) Analytics.emit("endless_crash", { score: S.score, mode: S.mode, best: isBest, continued: !!S.runContinued });
 }
 /* Gate D: overdrive-krasch — marginalen avgör medaljen (1–3★, höjer endast). */
 function showOverdriveOver() {
   const base = Number.isFinite(S.odBaseTarget) ? S.odBaseTarget : S.cfg.target; // A1: aldrig Infinity
   const margin = Math.max(0, S.score - base);
   const stars = starCount(S.score, base);
-  const saved = store.setMedal(S.mode, S.level, Math.max(1, stars));
-  const isBest = store.setBestFor(S.mode, S.level, S.score); // A1: overdrive-poäng är nivåns rekord
+  const saved = S.runContinued ? store.medal(S.mode, S.level) : store.setMedal(S.mode, S.level, Math.max(1, stars));
+  const isBest = S.runContinued ? false : store.setBestFor(S.mode, S.level, S.score); // fortsatta runs skriver inte rena rekord
   if (stars >= 2) AudioFX.medal(); else if (isBest) AudioFX.record();
   S.best = store.bestFor(S.mode, S.level);
   hideAll(); overOv.hidden = false; hud.hidden = true;
@@ -1466,22 +1772,27 @@ function showOverdriveOver() {
       else oe.hidden = true;
     }
   } catch (e) {}
-  if (window.Analytics) Analytics.emit("overdrive_crash", { level: S.level, score: S.score, margin, stars: saved, mode: S.mode });
+  syncContinueUI();
+  if (window.Analytics) Analytics.emit("overdrive_crash", { level: S.level, score: S.score, margin, stars: saved, mode: S.mode, continued: !!S.runContinued });
 }
 
 function levelClear() {
   if (S.state !== "playing") return;
+  resetCrashMarks(); // the course is complete; the next course starts clean
   if (S.simMode) { S.simResult = "clear"; return; }
+  Econ.mission("clear", 1);
+  Econ.flush();
   if (S.runMode === "daily") { Daily.end(true); S.state = "clear"; S.clearT = 0; AudioFX.fanfare(); confetti(); tutorial.hidden = true; return; }
+  // The run has a final clear; a post-clear double-Coin claim uses its own permanent grant key.
+  try { if (window.SaveV2 && SaveV2.finishRunWalletKeys && Econ.runId) SaveV2.finishRunWalletKeys(Econ.runId); } catch (e) {}
   S.state = "clear";
   S.clearT = 0;
   AudioFX.play(AudioFX.isGlide() ? "victory" : "fanfare"); // legacy keeps its fanfare
   confetti();
-  Econ.flush(); // Gate C: spara hinderfjädrar före förstaclear-bonusen
-  const isBest = store.setBestFor(S.mode, S.level, S.score);
+  const isBest = S.runContinued ? false : store.setBestFor(S.mode, S.level, S.score);
   S.clearIsNewBest = !!isBest;
   store.setCleared(S.mode, S.level); // replay avklarar utan att röra unlock
-  store.setMedal(S.mode, S.level, 1); // Gate D: clear = minst 1★ (fler kräver overdrive)
+  if (!S.runContinued) store.setMedal(S.mode, S.level, 1); // continued-runs hålls utanför rena medalj-/rekordlistor
   if (store.unlocked < S.level + 1) store.unlocked = S.level + 1; // höj endast — sänk aldrig
   /* Phase 1A: förstaclear-bonus (exakt en gång per läge+nivå) + run-summering. */
   S.clearPipesEarned = Econ.runEarned;
@@ -1517,6 +1828,8 @@ function medalForScore(score, target) { return medalFor(score, target); }
 
 function showClearPanel() {
   hideAll(); clearOv.hidden = false; hud.hidden = true;
+  const doubleBtn = $("clearDoubleRunBtn");
+  if (doubleBtn) { doubleBtn.hidden = !(Econ.adsStubEnabled() && Econ.runEarned > 0 && S.runMode !== "hardcore" && !S.hardcore); doubleBtn.textContent = I18N.t("double_run_coins"); }
   const wi = WORLD_INFO[S.worldKey];
   const isFinal = !!S.clearIsWorldFinal;
   const nextDef = Progress.nextWorldAfter(S.level);
@@ -1540,7 +1853,7 @@ function showClearPanel() {
   }
   if ($("clearNewBest")) $("clearNewBest").hidden = !S.clearIsNewBest;
   $("medalClear").textContent = medalEmoji(S.score, S.cfg.target);
-  $("clearScore").textContent = S.score;
+  $("clearScore").textContent = S.score + (S.runContinued ? " ⟲" : "");
   if ($("clearObstacles")) $("clearObstacles").textContent = S.score; // 1 poäng = 1 passerat hinder
   $("clearBest").textContent = store.bestFor(S.mode, S.level) + (S.clearIsNewBest ? I18N.t("new_best") : "");
   // nästa destination (aldrig autostart — spelaren väljer)
@@ -1607,7 +1920,7 @@ function showClearPanel() {
     if ((S.clearBonus | 0) > 0) parts.push("<b>" + I18N.t("clear_bonus", { n: S.clearBonus }) + "</b>");
     if (parts.length) {
       rslot.hidden = false;
-      rslot.innerHTML = "🪶 " + parts.join(" &nbsp;•&nbsp; ") + ' &nbsp;<span style="opacity:.7">(Σ ' + Econ.bal + " 🪶)</span>";
+      rslot.innerHTML = "🪙 " + parts.join(" &nbsp;•&nbsp; ") + ' &nbsp;<span style="opacity:.7">(Σ ' + Econ.bal + " C)</span>";
     } else rslot.hidden = true;
   }
 }
@@ -1620,8 +1933,8 @@ function showClearPanel() {
    - The date is locked when the run is set up; a run past midnight counts for the day it started.
    - Unlimited attempts; today's BEST counts. Own records (pfb_daily_v1): never touches level/endless records,
      medals, unlocks or first-clear.
-   - 25 🪶 once per UTC day for the first clear (keyed on the session-guarded economy day; no pay on clock skew).
-     Obstacle feathers use the normal per-day tiers. Sharing never pays anything.
+   - Daily-course first clear pays the configured Coins amount once per UTC day (session-guarded; no pay on clock skew).
+     The 7th daily-track claim grants separate prestige-F via the ECON source allowlist. Sharing never pays anything.
    - No revive, no ads. Seed never shown. Result labelled UNVERIFIED everywhere.
    - E2 receipt (pfb_receipt_v1): flap physics-step indices + score + Sim hash of the best run; replays locally with Sim.
    - Days the fine planner could not clear are re-salted from the pre-checked calendar below
@@ -1658,13 +1971,48 @@ const Daily = {
     let d = null; try { d = JSON.parse(SafeStorage.get(this.KEY) || "null"); } catch (e) { d = null; }
     if (!d || typeof d !== "object" || d.v !== 1) d = { v: 1, date: null, attempts: 0, best: null, last: null, paid: null, days: {} };
     if (!d.days || typeof d.days !== "object") d.days = {};
+    if (!d.runAttempts || typeof d.runAttempts !== "object" || Array.isArray(d.runAttempts)) d.runAttempts = {};
     return d;
   },
   save(d) {
     const keys = Object.keys(d.days).sort(); while (keys.length > 60) delete d.days[keys.shift()]; // keep 60 days of own history
+    const runs = Object.keys(d.runAttempts || {}).sort((a, b) => (d.runAttempts[a].startedAt || 0) - (d.runAttempts[b].startedAt || 0));
+    while (runs.length > 128) delete d.runAttempts[runs.shift()]; // keep recent per-attempt receipts; total count remains monotonic
     try { SafeStorage.set(this.KEY, JSON.stringify(d)); } catch (e) {}
   },
-  forDate(date) { const d = this.load(); if (d.date !== date) { d.date = date; d.attempts = 0; d.best = null; d.last = null; } return d; },
+  forDate(date) {
+    const d = this.load();
+    if (d.date !== date) { d.date = date; d.attempts = 0; d.best = null; d.last = null; d.runAttempts = {}; d.activeRunId = null; }
+    return d;
+  },
+  registerAttempt(date, runId) {
+    if (!date || !runId) return { ok: false, reason: "run-id" };
+    const d = this.forDate(date), id = String(runId).slice(0, 180);
+    const fresh = !Object.prototype.hasOwnProperty.call(d.runAttempts, id);
+    if (fresh) {
+      d.attempts = Math.max(0, d.attempts | 0) + 1;
+      d.runAttempts[id] = { status: "started", startedAt: Date.now(), continued: false };
+    }
+    d.activeRunId = id;
+    if (d.best) d.days[date] = { best: d.best.score, target: d.best.target, cleared: !!d.best.cleared, attempts: d.attempts };
+    this.save(d);
+    return { ok: true, fresh, attempts: d.attempts, runId: id };
+  },
+  markInterrupted(reason) {
+    if (S.runMode !== "daily" || !S.dailyInfo || S.dailyEnded || !Econ.runId) return false;
+    const date = S.dailyInfo.date, id = String(Econ.runId), d = this.forDate(date);
+    const known = Object.prototype.hasOwnProperty.call(d.runAttempts, id);
+    if (!known && S.state !== "playing" && S.state !== "dying" && S.state !== "paused" && !S.runContinued) return false;
+    if (!known) d.attempts = Math.max(0, d.attempts | 0) + 1;
+    d.runAttempts[id] = Object.assign({}, d.runAttempts[id] || {}, {
+      status: "interrupted", startedAt: (d.runAttempts[id] && d.runAttempts[id].startedAt) || Date.now(),
+      interruptedAt: Date.now(), reason: String(reason || "pagehide"), score: S.score | 0, continued: !!S.runContinued
+    });
+    d.activeRunId = id;
+    if (d.best) d.days[date] = { best: d.best.score, target: d.best.target, cleared: !!d.best.cleared, attempts: d.attempts };
+    this.save(d);
+    return true;
+  },
   better(a, b) { // a better than b?
     if (!b) return true;
     if (!!a.cleared !== !!b.cleared) return !!a.cleared;
@@ -1686,10 +2034,11 @@ const Daily = {
   /* ---------- live run ---------- */
   showReady() {
     if (!this.ON) return showMenu();
+    resetCrashMarks(); // Dagens bana startar alltid med en ren visuell bana
     const info = this.info(this.today());
     setLevel(info.dl);
     this.apply(info);
-    S.state = "ready";
+    S.state = "ready"; S.continueReady = false;
     S.score = 0; S.pipes = []; S.particles = []; S.popups = [];
     S.camX = 0; S.shake = 0; S.prevGapY = null;
     S.ptime = 0; S.__stepIdx = 0; LIVE_ACC.acc = 0; S.liveStep = 0;
@@ -1699,7 +2048,7 @@ const Daily = {
     S.dailyFlaps = []; S.dailyMarks = []; S.dailyWall = 0; S.dailyEnded = false;
     resetBird();
     Econ.resetRun();
-    hideAll(); readyOv.hidden = false; hud.hidden = false; syncAirLegend();
+    hideAll(); readyOv.hidden = false; hud.hidden = false; syncModeBtns(); syncAirLegend();
     updateHUD();
     const d = this.forDate(info.date);
     $("readyPill").textContent = I18N.t("course_pill");
@@ -1715,7 +2064,8 @@ const Daily = {
   /* called from startPlaying for daily runs: fixed start state so the receipt replays in Sim */
   onStart() {
     S.bird.y = S.H * 0.44; S.bird.vy = 0; S.bird.rot = 0; S.camX = 0;
-    S.dailyWall = 0; // real seconds spent in "playing" (fed by the main loop, unclamped) → slow-motion check
+    if (!S.runContinued) S.dailyWall = 0; // preserve active-attempt wall time after its one allowed continuation
+    this.registerAttempt(S.dailyInfo && S.dailyInfo.date, Econ.runId);
   },
   onFlap() { if (S.runMode === "daily" && S.state === "playing" && S.dailyFlaps) S.dailyFlaps.push(S.liveStep | 0); },
   /* per physics step (live + Sim): closest approach to an opening edge while inside an obstacle */
@@ -1736,27 +2086,49 @@ const Daily = {
     const info = S.dailyInfo;
     const ratio = S.dailyWall > 0.5 ? Math.min(1.5, S.ptime / S.dailyWall) : 1;
     const r = { date: info.date, salt: info.salt, target: info.target, score: S.score, cleared: !!cleared,
-      ticks: S.liveStep | 0, marks: (S.dailyMarks || []).join(""), slow: ratio < this.SLOW_RATIO, ratio: +ratio.toFixed(3) };
+      continued: !!S.runContinued, ticks: S.liveStep | 0, marks: (S.dailyMarks || []).join(""), slow: ratio < this.SLOW_RATIO, ratio: +ratio.toFixed(3) };
     const receipt = { v: 1, fmt: "dipwing-daily-receipt", build: window.GAME_VERSION || "?", date: info.date, salt: info.salt,
       dl: info.dl, target: info.target, steps: (S.dailyFlaps || []).slice(0, 20000), score: S.score, cleared: !!cleared,
       ticks: S.liveStep | 0, hash: Sim.hash() };
     Econ.flush();
-    const d = this.forDate(info.date);
-    d.attempts++; d.last = r;
+    const d = this.forDate(info.date), runId = String(Econ.runId || "daily-run-unknown");
+    if (!Object.prototype.hasOwnProperty.call(d.runAttempts, runId)) d.attempts = Math.max(0, d.attempts | 0) + 1;
+    d.runAttempts[runId] = Object.assign({}, d.runAttempts[runId] || {}, {
+      status: S.runContinued ? "continued-complete" : (cleared ? "complete" : "crashed"),
+      startedAt: (d.runAttempts[runId] && d.runAttempts[runId].startedAt) || Date.now(),
+      endedAt: Date.now(), score: S.score | 0, cleared: !!cleared, continued: !!S.runContinued
+    });
+    if (d.activeRunId === runId) d.activeRunId = null;
+    d.last = r;
     let isBest = false;
-    if (this.better(r, d.best)) { d.best = r; isBest = true; try { SafeStorage.set(this.RKEY, JSON.stringify(receipt)); } catch (e) {} }
-    d.days[info.date] = { best: d.best.score, target: info.target, cleared: !!d.best.cleared, attempts: d.attempts };
+    if (S.runContinued) {
+      try { SaveV2.setDailyContBest(info.date, S.score); } catch (e) {}
+    } else {
+      try { SaveV2.setDailyBest(info.date, S.score); } catch (e) {}
+      if (this.better(r, d.best)) {
+        d.best = r; isBest = true;
+        try { SafeStorage.set(this.RKEY, JSON.stringify(receipt)); } catch (e) {}
+      }
+    }
+    if (d.best) d.days[info.date] = { best: d.best.score, target: info.target, cleared: !!d.best.cleared, attempts: d.attempts };
     // first clear of the day pays once. Keyed on the session-guarded economy day; nothing on clock skew.
     let paid = 0;
     if (cleared && d.paid !== info.date) {
       let day = null; try { day = Econ.econDay().day; } catch (e) {}
       if (day === info.date && !Econ.clockSkew() && (!d.paid || info.date > d.paid)) {
-        d.paid = info.date; this.save(d); // write the claim first: a crash between can only lose 25, never double-pay
-        const amt = (window.ECON && ECON.rewards && ECON.rewards.dailyCourse) | 0;
-        if (amt > 0 && window.SaveV2) { SaveV2.addFeathers(amt); paid = amt; Econ.refreshFeatherUI(); }
+        const amt = Number((window.ECON && ECON.rewards && ECON.rewards.dailyCourse) || 0);
+        if (amt > 0 && window.SaveV2) {
+          const claim = SaveV2.claimDailyCourse(info.date, amt);
+          if (claim.ok || claim.duplicate) { d.paid = info.date; paid = claim.ok ? claim.delta : 0; this.save(d); if (paid) { Econ.noteInstantCoins(paid); Econ.refreshFeatherUI(); } }
+        }
       }
     }
     this.save(d);
+    // Keep run-scoped wallet idempotency keys while a first crash may still be continued.
+    // A clear or the final continued result closes the attempt and can now compact them.
+    if (cleared || S.runContinued) {
+      try { if (window.SaveV2 && SaveV2.finishRunWalletKeys) SaveV2.finishRunWalletKeys(runId); } catch (e) {}
+    }
     S.dailyResult = { r, isBest, paid };
     if (window.Analytics) Analytics.emit("daily_course_end", { cleared: !!cleared, score: S.score, target: info.target, attempts: d.attempts });
   },
@@ -1813,12 +2185,18 @@ const Daily = {
   render() {
     const info = this.info(this.today()), d = this.forDate(info.date), res = S.dailyResult;
     const showRes = res && res.r.date === info.date && S.runMode === "daily" && S.dailyEnded;
+    const doubleBtn = $("courseDoubleRunBtn");
+    const runAlreadyDoubled = !!(window.SaveV2 && SaveV2.hasRunDoubleClaim && SaveV2.hasRunDoubleClaim(Econ.runId));
+    if (doubleBtn) {
+      doubleBtn.hidden = !(showRes && Econ.adsStubEnabled() && Econ.runEarned > 0 && !S.hardcore && !runAlreadyDoubled);
+      doubleBtn.textContent = I18N.t("double_run_coins");
+    }
     $("courseSub").textContent = I18N.t("course_sub", { date: info.date, kind: I18N.t("course_kind_" + info.kind), n: info.target });
     $("courseCheck").textContent = !info.checked ? I18N.t("course_unchecked") : info.hard ? I18N.t("course_hard") : "";
     $("courseCheck").hidden = !$("courseCheck").textContent;
     $("courseResult").hidden = !showRes;
     if (showRes) $("courseResult").textContent = (res.r.cleared ? I18N.t("course_result_clear", { s: res.r.score, n: res.r.target }) : I18N.t("course_result_crash", { s: res.r.score, n: res.r.target })) +
-      (res.isBest && d.attempts > 1 ? " · " + I18N.t("course_newbest") : "") + (res.paid ? " · +" + res.paid + " 🪶" : "");
+      (res.isBest && d.attempts > 1 ? " · " + I18N.t("course_newbest") : "") + (res.paid ? " · +" + res.paid + " C" : "") + (res.r.continued ? " · ⟲" : "");
     const show = showRes ? res.r : d.best;
     const sqEl = $("courseSquares"); sqEl.innerHTML = "";
     if (show) for (const s of this.squares(show)) { const b = document.createElement("span"); b.className = "csq " + s; sqEl.appendChild(b); }
@@ -1829,8 +2207,9 @@ const Daily = {
     $("courseReward").textContent = d.paid === info.date ? I18N.t("course_reward_done", { n: amt }) : I18N.t("course_reward", { n: amt });
     $("courseSlow").hidden = !(show && show.slow);
     $("coursePlayBtn").innerHTML = I18N.t(d.attempts ? "course_again" : "course_play");
-    for (const id of ["courseShareBtn", "courseCopyBtn", "courseDlBtn"]) $(id).disabled = !d.best;
-    $("courseShareText").value = d.best ? this.shareText(d.best, d.attempts) : "";
+    const shareClean = !!d.best && !(showRes && res.r.continued);
+    for (const id of ["courseShareBtn", "courseCopyBtn", "courseDlBtn"]) $(id).disabled = !shareClean;
+    $("courseShareText").value = shareClean ? this.shareText(d.best, d.attempts) : "";
     $("courseShareText").hidden = true; $("courseStatus").textContent = "";
   },
   menuButton() {
@@ -1890,13 +2269,22 @@ if ($("coursePlayBtn")) {
      forces runMode "adventure"), so solvability/physics tooling is unaffected.
    - Flag: ?scout=0 or SafeStorage "pfb_scout"="0" hides every entry point. Offered from level SCOUT_FROM.
    ============================================================ */
-const SCOUT_ON = flagOn("scout", "pfb_scout");
+const SCOUT_ON = (function () {
+  try {
+    if (!(window.GAME_BUILD && window.GAME_BUILD.testHooks === true)) return false;
+    const q = new URLSearchParams(location.search).get("scout");
+    if (q === "0") return false;
+    if (q === "1") return true;
+    return window.SafeStorage ? SafeStorage.get("pfb_scout") === "1" : false;
+  } catch (e) { return false; }
+})();
 const SCOUT_FROM = 18; // where D24 starts to drop sharply (difficulty sweep v0.6)
 const Scout = {
   offered(level) { return SCOUT_ON && S.runMode === "adventure" && !S.overdrive && level >= SCOUT_FROM; },
   show(level, seed) {
     if (!SCOUT_ON) return;
     setLevel(level);
+    resetCrashMarkDistance(); // ny visuell genomflygning av samma bana
     S.runMode = "scout"; S.diff = level; S.overdrive = false; S.odBaseTarget = null;
     S.state = "ready";
     S.score = 0; S.pipes = []; S.particles = []; S.popups = [];
@@ -2121,14 +2509,14 @@ function openSettings() { hideAll(); syncSettingsUI(); settingsOv.hidden = false
    Rör ALDRIG fysik/RNG/hinder/svårighet eller Classic/Sky-regler.
    ============================================================ */
 let _confirmBird = null, _confirmTimer = 0, _birdsReturn = "menu";
-function openDaily() { AudioFX.ensure(); hideAll(); renderDaily(); if (dailyOv) dailyOv.hidden = false; }
+function openDaily() { AudioFX.ensure(); Econ.flush(); hideAll(); renderDaily(); if (dailyOv) dailyOv.hidden = false; }
 /* Gate C: samlingen kan öppnas mitt i en pausad/redo runda utan att
    rundan förloras — tillbaka-knappen återvänder dit spelaren var. */
 function openBirds(returnTo) {
   AudioFX.ensure();
   _birdsReturn = (returnTo === "pause" || returnTo === "ready") ? returnTo : "menu";
   if (_birdsReturn !== "menu" && S.state !== "playing" && S.state !== "ready" && S.state !== "paused") _birdsReturn = "menu";
-  hideAll(); renderBirds(); if (birdsOv) birdsOv.hidden = false;
+  hideAll(); renderShop(); if (birdsOv) birdsOv.hidden = false;
 }
 function backBirds() {
   AudioFX.ensure(); AudioFX.click();
@@ -2143,6 +2531,7 @@ function renderDaily() {
   const g = $("dailyGrid"); if (!g) return;
   g.innerHTML = "";
   const track = Econ.dailyTrack();
+  const seventhPrestige = Number(window.ECON?.prestige?.dailySeventhClaim || 0);
   let st = { canClaim: false, claimedTotal: 0 };
   try { st = SaveV2.dailyState(); st.canClaim = st.canClaim && Econ.sessionAllowsClaim(); } catch (e) {}
   const pos = st.claimedTotal % track.length;
@@ -2153,7 +2542,7 @@ function renderDaily() {
     const claimed = i < pos, isToday = i === pos;
     card.className = "daycard" + (claimed ? " claimed" : "") + (isToday ? " today" : "") + (!claimed && !isToday ? " locked" : "");
     card.innerHTML = '<div class="daynum">' + I18N.t("daily_day", { n: i + 1 }) + "</div>" +
-      '<div class="dayreward">' + track[i] + "🪶</div>" +
+      '<div class="dayreward">' + track[i] + " 🪙" + (i === 6 && seventhPrestige > 0 ? " +" + seventhPrestige + " F" : " C") + "</div>" +
       '<div class="daystate">' + (claimed ? I18N.t("daily_claimed") : (isToday ? I18N.t("daily_today") : I18N.t("daily_next"))) + "</div>";
     g.appendChild(card);
   }
@@ -2183,6 +2572,31 @@ function renderDaily() {
       btn.hidden = true; done.hidden = false;
       done.textContent = I18N.t("daily_done");
     }
+  }
+  const ad = $("dailyDoubleBtn");
+  if (ad) {
+    const ds = SaveV2.dailyAdState();
+    ad.hidden = !Econ.adsStubEnabled() || !ds.reward || !!ds.used;
+    ad.textContent = (window.ECON.ads.testLabelSv || "TESTLÄGE – ingen riktig reklam") + " · Dubbla dagsbonus";
+    ad.onclick = () => { const r = Econ.claimDoubleDaily(); renderDaily(); if (r.ok) { AudioFX.unlock(); AudioFX.fanfare(); } else AudioFX.click(); };
+  }
+  const missions = $("dailyMissions");
+  if (missions) {
+    const state = Econ.missionState(), defs = (window.ECON && ECON.missions) || [];
+    missions.innerHTML = "<strong>Dagsuppdrag</strong>";
+    const list = document.createElement("div"); list.className = "missionList";
+    for (const def of defs) {
+      const st = state.day === SaveV2.utcDateStr(new Date()) ? (state.list || []).find(x => x.id === def.id) : null;
+      const row = document.createElement("div"); row.className = "missionRow";
+      const label = document.createElement("span"); label.textContent = (def.titleSv || def.id) + " · " + ((st && st.prog) || 0) + "/" + def.target + " · +" + def.reward + " C";
+      row.appendChild(label);
+      const claim = document.createElement("button"); claim.type = "button"; claim.className = "btn secondary mini";
+      claim.textContent = st && st.paid ? "Hämtad" : "Hämta";
+      claim.disabled = !(st && st.done && !st.paid);
+      claim.onclick = () => { const r = Econ.claimMission(def.id); renderDaily(); if (r.ok) AudioFX.fanfare(); else AudioFX.click(); };
+      row.appendChild(claim); list.appendChild(row);
+    }
+    missions.appendChild(list);
   }
 }
 /* Mini-förhandsvisning av fågelskinn (SVG — samma palett som canvas, statisk). */
@@ -2250,7 +2664,7 @@ function renderBirds() {
   const sub = $("birdsSub"); if (sub) sub.textContent = I18N.t(v1 ? "closet_sub" : "birds_sub");
   let owned = ["sunny"], equipped = "sunny", bal = 0, cos = { owned: {}, equipped: {} };
   try { owned = SaveV2.ownedBirds(); equipped = SaveV2.equippedBird(); bal = Econ.bal; if (SaveV2.cosmetics) cos = SaveV2.cosmetics(); } catch (e) {}
-  const bb = $("birdsBal"); if (bb) bb.textContent = "🪶 " + bal;
+  const bb = $("birdsBal"); if (bb) bb.textContent = "🪙 " + bal + " C · " + (SaveV2.getPrestigeFeathers() | 0) + " F";
   let idNew = false; try { idNew = !!SaveV2.get("idNew"); } catch (e) {}
   // tabs
   const tabs = $("closetTabs");
@@ -2344,6 +2758,206 @@ function resetBird() {
   S.bird.y = S.H * 0.44;
   S.bird.vy = 0; S.bird.rot = 0; S.bird.alive = true;
 }
+const SHOP_TABS = ["birds", "scarf", "trail", "hat", "effect", "theme", "archive", "collection"];
+let SHOP_TAB = "birds", SHOP_PENDING = null, SHOP_PREVIEW = null, SHOP_LAST_NOTE = "", SHOP_UNDO_TIMER = 0;
+function shopFailText(reason) {
+  const k = ({ funds: "shop_need_funds", price: "shop_err_price", owned: "shop_err_owned", duplicate: "shop_err_duplicate" })[reason] || "shop_err_failed";
+  return I18N.t(k);
+}
+const SHOP_CURRENCY = c => c === "F" ? "F" : "C";
+function shopHash(text) { let h = 2166136261; for (const ch of String(text)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; }
+function shopRarity(row) {
+  const d = row.def;
+  if (d.rarity) return d.rarity;
+  if (d.prestige || d.currency === "F") return "legendary";
+  const n = Number(d.cost) || 0;
+  if (n <= 600) return "common"; if (n <= 1500) return "uncommon"; if (n <= 3500) return "rare";
+  if (n <= 7000) return "epic"; return "mythic";
+}
+function shopRarityMarkup(r) {
+  const n = ({ common: 1, uncommon: 2, rare: 3, epic: 4, mythic: 5, legendary: 6 })[r] || 1;
+  return "◆ " + "●".repeat(n) + " " + I18N.t("shop_rarity_" + r);
+}
+function shopCatalog() {
+  const rows = [], v1 = !!(window.IDENTITY && IDENTITY.V1), idNew = !!SaveV2.get("idNew"), equippedBird = SaveV2.equippedBird();
+  for (const def of Econ.birdDefs()) {
+    if (def.legacy && idNew && equippedBird !== def.id) continue;
+    if (def.v1 && !v1) continue;
+    if (v1 && !def.v1 && !def.legacy && !(IDENTITY.BIRD_PAL && IDENTITY.BIRD_PAL[def.id])) continue;
+    rows.push({ kind: "bird", slot: "bird", category: "birds", def, currency: def.currency === "F" ? "F" : "C" });
+  }
+  for (const slot of ["scarf", "trail", "hat", "effect", "theme"]) {
+    for (const def of Econ.cosmeticDefs(slot)) rows.push({ kind: "cosmetic", slot, category: slot, def, currency: def.currency === "F" ? "F" : "C" });
+  }
+  return rows;
+}
+function shopOwned(row) {
+  try { return row.kind === "bird" ? SaveV2.isOwned(row.def.id) : SaveV2.isCosOwned(row.slot, row.def.id); } catch (e) { return false; }
+}
+function shopEquipped(row) {
+  try { return row.kind === "bird" ? SaveV2.equippedBird() === row.def.id : SaveV2.cosmetics().equipped[row.slot] === row.def.id; } catch (e) { return false; }
+}
+function shopCondition(row) {
+  const d = row.def;
+  if (d.prestige) return d.prestige.type === "clear" ? I18N.t("prestige_req_clear", { n: d.prestige.level }) : d.prestige.type === "endless" ? I18N.t("prestige_req_endless", { n: d.prestige.n }) : I18N.t("shop_unlock_condition", { n: d.prestige.type || "achievement" });
+  if (d.secret) return I18N.t("shop_unlock_condition", { n: d.secret });
+  if (d.unlockCondition) return I18N.t("shop_unlock_condition", { n: d.unlockCondition });
+  return "";
+}
+function shopName(row) {
+  const id = row.def.id;
+  return I18N.t((row.kind === "bird" ? "bird_" : "cos_") + id + "_name");
+}
+function shopDesc(row) {
+  const id = row.def.id;
+  const k = (row.kind === "bird" ? "bird_" : "cos_") + id + "_desc";
+  const t = I18N.t(k); return t === k ? "" : t;
+}
+function shopPreviewMarkup(row) {
+  try {
+    if (row.kind === "bird") return (window.IDENTITY && IDENTITY.V1) ? closetPreview("bird", row.def, 72) : birdArt(row.def, 72);
+    if (["scarf", "hat", "trail"].includes(row.slot)) return closetPreview(row.slot, row.def, 72);
+  } catch (e) {}
+  return ({ effect: "✨", theme: "🎨" })[row.slot] || "🐦";
+}
+function shopDailyShelf(rows) {
+  const day = new Date().toISOString().slice(0, 10);
+  const candidates = rows.filter(r => r.currency === "C" && !r.def.prestige && !r.def.secret && !r.def.unlockCondition && Number(r.def.cost) > 0).slice();
+  candidates.sort((a, b) => shopHash(day + ":" + a.slot + ":" + a.def.id) - shopHash(day + ":" + b.slot + ":" + b.def.id) || (a.def.id < b.def.id ? -1 : 1));
+  return candidates.slice(0, Number(ECON.shop.dailyShelfCount) || 3).map((r, i) => ({ ...r, regularPrice: Number(r.def.cost), price: i === 0 ? Math.max(1, Math.floor(Number(r.def.cost) * (1 - Number(ECON.shop.dailyDiscount || 0.2)))) : Number(r.def.cost), discounted: i === 0 }));
+}
+function shopCurrentPrice(row, shelf) {
+  const found = shelf.find(x => x.slot === row.slot && x.kind === row.kind && x.def.id === row.def.id);
+  return found ? found.price : Number(row.def.cost) || 0;
+}
+function shopTabRows(rows) {
+  if (SHOP_TAB === "collection") return rows.filter(shopOwned);
+  if (SHOP_TAB === "archive") return rows.filter(r => r.currency === "F");
+  return rows.filter(r => r.category === SHOP_TAB && r.currency !== "F");
+}
+function applyShopTheme() {
+  const cards = document.querySelectorAll("#menuOv .card, #profileOv .card"); if (!cards.length) return;
+  try {
+    const id = SaveV2.cosmetics().equipped.theme;
+    const d = id && Econ.cosmeticDef("theme", id);
+    for (const el of cards) {
+      if (d) { el.style.setProperty("--shop-menu-accent", d.accent || "#1A1433"); el.style.setProperty("--shop-menu-paper", d.paper || "#FFF8EC"); }
+      else { el.style.removeProperty("--shop-menu-accent"); el.style.removeProperty("--shop-menu-paper"); }
+    }
+  } catch (e) {}
+}
+function shopSetPreview(row) {
+  SHOP_PREVIEW = row ? row.slot + ":" + row.def.id : null;
+  const box = $("shopPreview"), art = $("shopPreviewArt");
+  if (!box || !art) return;
+  if (!row) { box.hidden = true; return; }
+  art.innerHTML = shopPreviewMarkup(row);
+  $("shopPreviewName").textContent = shopName(row);
+  $("shopPreviewDesc").textContent = shopDesc(row);
+  box.hidden = false;
+}
+function shopCard(row, shelf) {
+  const d = row.def, rarity = shopRarity(row), owned = shopOwned(row), equipped = shopEquipped(row);
+  const card = document.createElement("div"); card.className = "bird-card shop-card rarity-" + rarity + (equipped ? " equipped" : "") + (d.prestige ? " prestige" : ""); card.dataset.shopId = d.id; card.dataset.shopSlot = row.slot;
+  const art = document.createElement("div"); art.className = "bird-art"; art.innerHTML = shopPreviewMarkup(row);
+  const meta = document.createElement("div"); meta.className = "bird-meta";
+  const name = document.createElement("b"); name.textContent = shopName(row); meta.appendChild(name);
+  const desc = document.createElement("small"); desc.textContent = shopDesc(row); meta.appendChild(desc);
+  const rarityLabel = document.createElement("div"); rarityLabel.className = "shop-rarity"; rarityLabel.textContent = shopRarityMarkup(rarity); meta.appendChild(rarityLabel);
+  const state = document.createElement("div"); state.className = "bird-sub";
+  const price = shopCurrentPrice(row, shelf), currency = SHOP_CURRENCY(row.currency);
+  if (owned) state.textContent = equipped ? I18N.t("shop_equipped") : I18N.t("shop_owned");
+  else if (d.prestige || d.secret || d.unlockCondition) state.textContent = shopCondition(row);
+  else { const offer = shelf.find(x => x.def.id === d.id && x.slot === row.slot && x.discounted); state.textContent = offer ? price + " " + currency + " · " + I18N.t("shop_discount") + " (ord. " + offer.regularPrice + " " + currency + ")" : price + " " + currency; }
+  meta.appendChild(state);
+  const go = document.createElement("div"); go.className = "bird-go";
+  if (owned) {
+    if (!equipped) {
+      const b = document.createElement("button"); b.className = "wbtn shop-equip"; b.type = "button"; b.textContent = I18N.t("bird_equip_btn");
+      b.addEventListener("click", () => { AudioFX.click(); const ok = row.kind === "bird" ? Econ.equipBird(d.id) : Econ.equipCosmetic(row.slot, d.id); if (ok) { applyShopTheme(); renderShop(); } }); go.appendChild(b);
+    }
+  } else if (d.prestige) {
+    const b = document.createElement("button"); b.className = "wbtn shop-claim"; b.type = "button";
+    const met = Econ.prestigeMet(d.prestige); b.disabled = !met; b.textContent = met ? I18N.t("prestige_claim_btn") : I18N.t("prestige_locked");
+    b.addEventListener("click", () => { AudioFX.click(); if (Econ.claimPrestige(row.kind === "bird" ? "bird" : row.slot, d.id).ok) renderShop(); }); go.appendChild(b);
+  } else if (d.secret || d.unlockCondition) {
+    // Earn-only / Secret items never show a price or purchase action.
+  } else {
+    const b = document.createElement("button"); b.className = "wbtn shop-price"; b.type = "button";
+    const balance = currency === "F" ? SaveV2.getPrestigeFeathers() : SaveV2.getCoins();
+    b.disabled = balance < price;
+    b.textContent = I18N.t("shop_buy_for", { n: price, c: currency });
+    b.addEventListener("click", () => {
+      AudioFX.click();
+      SHOP_PENDING = { kind: row.kind, slot: row.slot, id: d.id, price, currency, purchaseId: "shop-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10) };
+      shopSetPreview(row); renderShop();
+    });
+    go.appendChild(b);
+  }
+  meta.appendChild(go);
+  card.appendChild(art); card.appendChild(meta);
+  card.addEventListener("click", e => { if (e.target && e.target.closest("button")) return; shopSetPreview(row); });
+  return card;
+}
+function renderShop() {
+  const grid = $("birdsGrid"); if (!grid) return;
+  const rows = shopCatalog(), shelf = shopDailyShelf(rows);
+  const title = $("birdsTitle"); if (title) title.textContent = I18N.t("shop_title");
+  const sub = $("birdsSub"); if (sub) sub.textContent = I18N.t("shop_sub");
+  const bal = $("birdsBal"); if (bal) bal.textContent = "🪙 " + SaveV2.getCoins() + " C · " + SaveV2.getPrestigeFeathers() + " F";
+  const tabs = $("closetTabs");
+  if (tabs) {
+    tabs.hidden = false; tabs.innerHTML = "";
+    for (const tab of SHOP_TABS) {
+      const b = document.createElement("button"); b.className = "ctab" + (SHOP_TAB === tab ? " on" : ""); b.type = "button"; b.setAttribute("role", "tab"); b.setAttribute("aria-selected", SHOP_TAB === tab ? "true" : "false");
+      b.textContent = I18N.t("shop_tab_" + tab); b.dataset.tab = tab;
+      b.addEventListener("click", () => { AudioFX.click(); SHOP_TAB = tab; SHOP_PENDING = null; renderShop(); }); tabs.appendChild(b);
+    }
+  }
+  const shelfEl = $("shopDailyShelf"); if (shelfEl) {
+    shelfEl.innerHTML = ""; const label = document.createElement("div"); label.className = "tiny"; label.textContent = I18N.t("shop_daily_shelf"); shelfEl.appendChild(label);
+    for (const row of shelf) {
+      const b = document.createElement("button"); b.type = "button"; b.className = "shop-shelf-item"; b.dataset.shopId = row.def.id; b.dataset.shopSlot = row.slot;
+      const nm = document.createElement("b"); nm.textContent = shopName(row); const pr = document.createElement("small"); pr.textContent = shopOwned(row) ? I18N.t("shop_owned") : row.price + " C" + (row.discounted ? " · " + I18N.t("shop_discount") + " (ord. " + row.regularPrice + " C)" : "");
+      b.appendChild(nm); b.appendChild(pr); b.addEventListener("click", () => { SHOP_TAB = row.slot === "bird" ? "birds" : row.slot; shopSetPreview(row); renderShop(); }); shelfEl.appendChild(b);
+    }
+  }
+  const current = SHOP_PREVIEW ? rows.find(r => r.slot + ":" + r.def.id === SHOP_PREVIEW) : null;
+  shopSetPreview(current || null);
+  const confirm = $("shopConfirm"), confirmText = $("shopConfirmText");
+  if (confirm) confirm.hidden = !SHOP_PENDING;
+  if (SHOP_PENDING && confirmText) {
+    const c = SHOP_PENDING.currency, after = Math.max(0, (c === "F" ? SaveV2.getPrestigeFeathers() : SaveV2.getCoins()) - SHOP_PENDING.price);
+    confirmText.textContent = I18N.t("shop_confirm_title") + " · " + SHOP_PENDING.price + " " + c + " · " + I18N.t("shop_balance_after", { n: after, c });
+  }
+  const cb = $("shopConfirmBtn"), cancel = $("shopCancelBtn");
+  if (cb) cb.onclick = () => {
+    if (!SHOP_PENDING) return;
+    const p = SHOP_PENDING; SHOP_PENDING = null;
+    const result = Econ.purchaseShopItem(p.kind, p.slot, p.id, p.price, p.purchaseId);
+    SHOP_LAST_NOTE = result.ok ? I18N.t("shop_purchase_ok") : shopFailText(result.reason);
+    if (result.ok) { AudioFX.unlock(); applyShopTheme(); const row = rows.find(r => r.slot === p.slot && r.def.id === p.id); if (row) shopSetPreview(row); }
+    else AudioFX.play(AudioFX.isGlide() ? "clickDeny" : "hit");
+    renderShop();
+  };
+  if (cancel) cancel.onclick = () => { SHOP_PENDING = null; AudioFX.click(); renderShop(); };
+  const last = $("shopLastPurchase"), purchases = SaveV2.shopPurchases ? SaveV2.shopPurchases() : [];
+  const undoable = purchases.slice().reverse().find(p => p && !p.refunded && !p.used && Date.now() - Number(p.at || 0) <= Number(ECON.shop.undoMs || 30000));
+  if (SHOP_UNDO_TIMER) { clearTimeout(SHOP_UNDO_TIMER); SHOP_UNDO_TIMER = 0; }
+  if (last) {
+    last.innerHTML = ""; last.hidden = !undoable;
+    if (undoable) { // hide the undo button exactly when the 30 s window closes (no countdown is shown)
+      const left = Math.max(0, Number(undoable.at || 0) + Number(ECON.shop.undoMs || 30000) - Date.now());
+      SHOP_UNDO_TIMER = setTimeout(() => { SHOP_UNDO_TIMER = 0; const el = $("shopLastPurchase"); if (el) { el.hidden = true; el.innerHTML = ""; } }, left + 1);
+    }
+    if (undoable) { const b = document.createElement("button"); b.type = "button"; b.className = "wbtn"; b.textContent = I18N.t("shop_undo"); b.addEventListener("click", () => { const r = Econ.undoShopPurchase(undoable.id); SHOP_LAST_NOTE = r.ok ? I18N.t("shop_undo_done") : (r.reason === "not-undoable" && Date.now() - Number(undoable.at || 0) > Number(ECON.shop.undoMs || 30000) ? I18N.t("shop_undo_expired") : r.reason === "not-undoable" ? I18N.t("shop_used") : I18N.t("shop_err_failed")); renderShop(); }); last.appendChild(b); }
+  }
+  grid.innerHTML = ""; grid.classList.add("shop-grid");
+  const items = shopTabRows(rows);
+  if (!items.length) { const empty = document.createElement("p"); empty.className = "tiny"; empty.textContent = I18N.t("shop_empty"); grid.appendChild(empty); }
+  for (const row of items) grid.appendChild(shopCard(row, shelf));
+  const note = $("birdsNote"); if (note) { note.hidden = !SHOP_LAST_NOTE; note.textContent = SHOP_LAST_NOTE; }
+}
 /* ============================================================
    Ljudtest (sound test) — STAGING/DEV ONLY panel to audition every glide-v1 music theme and SFX
    on a phone. Shown from Settings when the build channel is "staging"/"dev" (or ?soundtest=1).
@@ -2434,7 +3048,16 @@ function onPress() {
   if (S.state === "ready") { startPlaying(); return; }
   if (S.state === "playing") { flap(); tutorial.hidden = true; }
 }
-canvas.addEventListener("pointerdown", e => { e.preventDefault(); onPress(); });
+// B-15: the transparent 2D input canvas remains the single input surface above WebGL.
+// Every touch pointerdown can flap, including a second thumb while the first remains down.
+canvas.addEventListener("pointerdown", e => {
+  if (e.pointerType === "mouse" && e.button !== 0) return;
+  e.preventDefault();
+  if (typeof R3D !== "undefined" && R3D.active && e.pointerId != null) {
+    try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
+  }
+  onPress();
+}, { passive: false });
 window.addEventListener("keydown", e => {
   if (e.code === "Space" || e.code === "ArrowUp" || e.code === "KeyW") {
     e.preventDefault();
@@ -2464,13 +3087,19 @@ $("pauseBtn").onclick = () => { AudioFX.click(); doPause(); };
 $("resumeBtn").onclick = () => { AudioFX.click(); doResume(); };
 $("pauseRestartBtn").onclick = () => { AudioFX.click(); if (S.runMode === "scout") Scout.show(S.level, S.scoutSeed); else if (S.runMode === "daily") Daily.showReady(); else if (S.runMode === "endless") showEndless(); else showReady(S.level); };
 $("pauseMenuBtn").onclick = () => { AudioFX.click(); showMenu(); };
-$("retryBtn").onclick = () => { AudioFX.click(); if (S.runMode === "daily") Daily.showReady(); else if (S.runMode === "endless") showEndless(); else showReady(S.level); }; // Gate D: endless startar om direkt
-$("overMenuBtn").onclick = () => { AudioFX.click(); showMenu(); };
-$("overLevelsBtn").onclick = () => { AudioFX.click(); openWorlds(); };
+$("retryBtn").onclick = () => { AudioFX.click(); finishRunAndRestart(); };
+if ($("continueCoinBtn")) $("continueCoinBtn").onclick = () => { AudioFX.click(); continueAfterCrash("coins"); };
+if ($("continueFilmBtn")) $("continueFilmBtn").onclick = () => { AudioFX.click(); continueAfterCrash("stub"); };
+if ($("doubleRunBtn")) $("doubleRunBtn").onclick = () => { AudioFX.click(); const r = Econ.claimDoubleRun(); if (r.ok) { Econ.refreshFeatherUI(); syncContinueUI(); } };
+if ($("clearDoubleRunBtn")) $("clearDoubleRunBtn").onclick = () => { AudioFX.click(); const r = Econ.claimDoubleRun(); if (r.ok) { $("clearDoubleRunBtn").hidden = true; Econ.refreshFeatherUI(); } };
+if ($("courseDoubleRunBtn")) $("courseDoubleRunBtn").onclick = () => { AudioFX.click(); const r = Econ.claimDoubleRun(); if (r.ok) { $("courseDoubleRunBtn").hidden = true; Econ.refreshFeatherUI(); } };
+$("overMenuBtn").onclick = () => { AudioFX.click(); finishDailyBeforeLeave(); showMenu(); };
+$("overLevelsBtn").onclick = () => { AudioFX.click(); finishDailyBeforeLeave(); openWorlds(); };
 /* Phase 1A: dagbelöning + samling (från menyn + HUD-pillen under spel). */
 if ($("dailyBtn")) $("dailyBtn").onclick = () => { AudioFX.click(); openDaily(); };
 if ($("birdsBtn")) $("birdsBtn").onclick = () => { AudioFX.click(); openBirds("menu"); };
 if ($("dailyBackBtn")) $("dailyBackBtn").onclick = () => { AudioFX.click(); showMenu(); };
+if ($("dailyDoubleBtn")) $("dailyDoubleBtn").onclick = () => { AudioFX.click(); const r = Econ.claimDoubleDaily(); if (r.ok) { $("dailyDoubleBtn").hidden = true; Econ.refreshFeatherUI(); } };
 if ($("birdsBackBtn")) $("birdsBackBtn").onclick = () => { backBirds(); };
 if ($("featherPill")) $("featherPill").onclick = () => {
   AudioFX.ensure(); AudioFX.click();
@@ -2484,14 +3113,24 @@ $("clearRetryBtn").onclick = () => { AudioFX.click(); showReady(S.level); }; // 
 if ($("clearWorldsBtn")) $("clearWorldsBtn").onclick = () => { AudioFX.click(); openWorlds(); };
 $("clearMenuBtn").onclick = () => { AudioFX.click(); showMenu(); };
 
+function syncMuteButton() {
+  const muted = !!AudioFX.muted;
+  muteBtn.textContent = muted ? "🔇" : "🔊";
+  muteBtn.setAttribute("aria-pressed", muted ? "true" : "false");
+  muteBtn.setAttribute("aria-label", I18N ? I18N.t("mute_btn_title") : "Ljud av/på");
+}
 function toggleMute() {
+  AudioFX.ensure();
+  // Hear the toggle cue when sound is available, both on mute and on unmute.
+  if (!AudioFX.muted) AudioFX.click();
   AudioFX.muted = !AudioFX.muted;
   try { AudioFX.syncMusic(); } catch (e) {}
+  if (!AudioFX.muted) AudioFX.click();
   store.muted = AudioFX.muted;
-  muteBtn.textContent = AudioFX.muted ? "🔇" : "🔊";
+  syncMuteButton();
 }
 muteBtn.onclick = toggleMute;
-muteBtn.textContent = AudioFX.muted ? "🔇" : "🔊";
+syncMuteButton();
 $("modeClassicBtn").onclick = () => { AudioFX.click(); setMode("classic"); };
 $("modeSkyBtn").onclick = () => { AudioFX.click(); setMode("sky"); };
 $("modeClassicBtn2").onclick = () => { AudioFX.click(); setMode("classic"); };
@@ -2534,19 +3173,63 @@ function flash(a) {
   flashEl.style.opacity = a; setTimeout(() => flashEl.style.opacity = 0, 90);
 }
 
+/* ---------- kvarliggande kraschemblem (endast grafik, aldrig en del av simmen) ---------- */
+const CRASH_MARKS = [];
+let CRASH_MARKS_LEVEL = null;
+// Visuell distansräknare: ökar ENDAST när stepPlaying flyttar världen. Hålls utanför S/sim/hash/Daily.
+let CRASH_MARK_DISTANCE = 0;
+function advanceCrashMarkDistance(distance) {
+  if (Number.isFinite(distance) && distance > 0) CRASH_MARK_DISTANCE += distance;
+}
+function resetCrashMarkDistance() { CRASH_MARK_DISTANCE = 0; }
+function resetCrashMarks() { CRASH_MARKS.length = 0; CRASH_MARKS_LEVEL = null; resetCrashMarkDistance(); }
+function syncCrashMarksLevel(level) {
+  if (CRASH_MARKS_LEVEL !== level) { CRASH_MARKS.length = 0; CRASH_MARKS_LEVEL = level; CRASH_MARK_DISTANCE = 0; }
+}
+function addCrashMark(x, y, hitGround) {
+  // Högst 15 märken per bana. Märket sparas i banans visuella distans, aldrig i sim-state.
+  if (CRASH_MARKS.length >= 15) CRASH_MARKS.shift();
+  const n = CRASH_MARKS.length;
+  const landY = SIMC.groundY(S) - 12; // visuellt viloläge strax ovanför markytan
+  const snapToGround = !!hitGround || reducedMotion();
+  CRASH_MARKS.push({ x, dist: CRASH_MARK_DISTANCE, y: snapToGround ? landY : y, startY: y, landY,
+    fallT: snapToGround ? 0.42 : 0, // luftkrasch faller ned under dödsanimationen; markträff/reducerad rörelse snäpper direkt
+    rot: Math.sin(x * 0.017 + y * 0.011 + n * 1.73) * 0.42,
+    spread: 0.82 + ((n * 7) % 5) * 0.08 });
+}
+function settleCrashMarks() {
+  // När game-over-vyn visas ska inga märken längre hänga mitt i luften.
+  for (const m of CRASH_MARKS) {
+    if (m.fallT < 0.42) { m.y = m.landY; m.startY = m.landY; m.fallT = 0.42; }
+  }
+}
+function updateCrashMarks(dt) {
+  for (const m of CRASH_MARKS) {
+    if (m.fallT >= 0.42) continue;
+    m.fallT = Math.min(0.42, m.fallT + dt);
+    const t = Math.max(0, Math.min(1, m.fallT / 0.42));
+    const eased = t * t * (3 - 2 * t);
+    m.y = m.startY + (m.landY - m.startY) * eased;
+  }
+}
+
 /* ---------- partiklar ---------- */
 function puff(x, y, n) {
   if (reducedMotion() || S.particles.length > 240) return; // a11y + partikeltak (visual only)
+  let puffCol = "255,255,255";
+  try { const eq = Econ.cosEquipped().effect, def = eq && Econ.cosmeticDef("effect", eq); if (def && def.puff) puffCol = def.puff; } catch (e) {}
   for (let i = 0; i < n; i++)
     S.particles.push({ x, y: y + rand(-4, 4), vx: rand(-90, -20), vy: rand(-40, 40),
-      life: rand(0.25, 0.5), t: 0, r: rand(2, 5), col: "255,255,255", kind: "puff" });
+      life: rand(0.25, 0.5), t: 0, r: rand(2, 5), col: puffCol, kind: "puff" });
 }
 function burst(x, y, n, feather) {
   if (reducedMotion() || S.particles.length > 240) return; // a11y + partikeltak (visual only)
+  let effectCol = feather ? "255,200,80" : "255,220,100";
+  try { const eq = Econ.cosEquipped().effect, def = eq && Econ.cosmeticDef("effect", eq); if (def && (feather ? def.feather : def.puff)) effectCol = feather ? def.feather : def.puff; } catch (e) {}
   for (let i = 0; i < n; i++)
     S.particles.push({ x, y, vx: rand(-220, 220), vy: rand(-320, 80),
       life: rand(0.5, 1.1), t: 0, r: rand(3, 7), feather: !!feather,
-      rot: rand(0, TAU), vr: rand(-9, 9), col: feather ? "255,200,80" : "255,220,100", kind: "bit" });
+      rot: rand(0, TAU), vr: rand(-9, 9), col: effectCol, kind: "bit" });
 }
 function sparkle(x, y) {
   if (reducedMotion() || S.particles.length > 240) return; // a11y + partikeltak (visual only)
@@ -2678,6 +3361,7 @@ function update(dt) {
   }
 
   if (S.state === "dying") {
+    updateCrashMarks(dt); // visuell fall mot marken; påverkar aldrig fysik eller replay-hash
     S.deathT += dt;
     S.bird.vy = Math.min(S.bird.vy + TUNE.gravity * dt, SIMC.PHYS.DEATH_MAX_VY);
     S.bird.y += S.bird.vy * dt;
@@ -2715,7 +3399,9 @@ function stepPlaying(dt) {
   // A1: ramp kapas vid målet (identiskt i adventure; overdrive behåller maxfart i stället för att tappa 13 %)
   const speed = SIMC.rampSpeed(c, S.score);
   S.curSpeed = speed; // A6: tajminghinder (sten) planerar mot aktuell fart
-  S.camX += speed * dt;
+  const markAdvance = speed * dt;
+  S.camX += markAdvance;
+  if (!S.simMode) advanceCrashMarkDistance(markAdvance); // live visual-only; never mutated by isolated Sim runs
 
   // 1) scrolla + uppdatera hinder (ob.t driver alla tajmingfaser deterministiskt)
   SIMC.advanceObstacles(S, speed, dt);
@@ -2732,7 +3418,12 @@ function stepPlaying(dt) {
   SIMC.clampCeiling(S.bird); // takspärr (efter rot ⇒ rot ser vy före spärren, som tidigare)
 
   // 4) spawn via Director (seedad sekvens — samma seed ⇒ samma hinder)
+  const coinSpawnLen = S.pipes.length, coinSpawnCount = S.spawnCount | 0;
   SIMC.maybeSpawn(S);
+  if (!S.simMode && window.PlacedCoins) {
+    if ((S.spawnCount | 0) !== coinSpawnCount) PlacedCoins.onSpawn(S, S.pipes.slice(coinSpawnLen));
+    PlacedCoins.update();
+  }
   // A5 (P1-1): nästa hinder skapas när det senaste når högerkanten (+90 px marginal) och placeras
   // exakt cfg.spacing (± var) efter det — utanför bild, så det konfigurerade avståndet gäller.
 
@@ -2822,6 +3513,7 @@ function render() {
     Worlds.drawBackground(ctx, S, w, h);
     drawScarfTrail();
     drawObstacles(w, h);
+    if (window.PlacedCoins) PlacedCoins.draw(ctx);
     Worlds.drawForeground(ctx, S, w, h);
   } else {
     drawSky(w, h);
@@ -2835,11 +3527,13 @@ function render() {
     if (VFIX_R) drawCloudsFront(); // v0.9 vfix: front clouds now sit BEHIND the obstacles (never veil a pipe edge)
     drawScarfTrail();
     drawObstacles(w, h);
+    if (window.PlacedCoins) PlacedCoins.draw(ctx);
     if (!VFIX_R) drawCloudsFront();
     drawGround(w, h);
     drawForeground(w, h);
   }
   drawAmbientFront(w, h);
+  drawCrashMarks();
   drawBird();
   drawParticles();
   drawPopups();
@@ -3612,6 +4306,37 @@ function drawBird() {
   ctx.restore();
 }
 
+function drawCrashMarks() {
+  if (!CRASH_MARKS.length) return;
+  ctx.save();
+  for (let i = 0; i < CRASH_MARKS.length; i++) {
+    const m = CRASH_MARKS[i], age = i / Math.max(1, CRASH_MARKS.length - 1);
+    // Older traces remain visible but settle into the ground/scene instead of accumulating as a dark blob.
+    ctx.globalAlpha = 0.30 + age * 0.28;
+    ctx.save(); ctx.translate(m.x - (CRASH_MARK_DISTANCE - m.dist), m.y + 7); ctx.rotate(m.rot); ctx.scale(m.spread, m.spread);
+    ctx.fillStyle = "rgba(76,83,91,0.24)";
+    ctx.beginPath(); ctx.ellipse(0, 5, 13, 3.8, 0, 0, TAU); ctx.fill();
+    const feather = (x, y, a, len, col) => {
+      ctx.save(); ctx.translate(x, y); ctx.rotate(a);
+      ctx.lineCap = "round"; ctx.lineJoin = "round";
+      ctx.strokeStyle = "rgba(48,55,70,0.58)"; ctx.lineWidth = 1.05;
+      ctx.fillStyle = col; ctx.beginPath();
+      ctx.moveTo(0, 0); ctx.quadraticCurveTo(len * 0.48, -len * 0.28, len, 0);
+      ctx.quadraticCurveTo(len * 0.49, len * 0.25, 0, 0); ctx.fill(); ctx.stroke();
+      ctx.strokeStyle = "rgba(83,101,119,0.52)"; ctx.lineWidth = 0.55;
+      ctx.beginPath(); ctx.moveTo(1, 0); ctx.lineTo(len - 1, 0);
+      for (let k = 1; k <= 4; k++) { const u = k / 5, px = len * u;
+        ctx.moveTo(px, 0); ctx.lineTo(px - 2.0, -2.0 * (1 - u));
+        ctx.moveTo(px, 0); ctx.lineTo(px - 2.0, 2.0 * (1 - u)); }
+      ctx.stroke(); ctx.restore();
+    };
+    feather(-10, 1, -0.58, 12, "#F1E7D6");
+    feather(0, -1, 0.22, 16, "#FFF5E4");
+    feather(3, 4, 0.92, 10, "#CFD9DF");
+    ctx.restore();
+  }
+  ctx.restore(); ctx.globalAlpha = 1;
+}
 function drawParticles() {
   for (const p of S.particles) {
     const k = 1 - p.t / p.life;
@@ -3723,6 +4448,8 @@ function r3dLoadScript(src) {
 }
 function r3dFail(why) {
   R3D.failed = why; R3D.events.push({ t: Date.now(), ev: "fallback", why });
+  // B-15: the 3D UI treatment is presentation-only and must disappear with the renderer.
+  try { document.body.classList.remove("r3d-ui"); } catch (e) {}
   if (R3D.active) { R3D.active = false; r3dSwapFX(false); try { window.Render3D && Render3D.dispose(); } catch (e) {} }
   r3dToast(why === "perf" ? "3D är för tungt här – visar 2D" : "3D kunde inte starta – visar 2D");
   r3dSyncChip();
@@ -3746,7 +4473,9 @@ function r3dStart() {
     R3D.tier = R3D.quality === "low" ? "low" : "high";
     const ok = Render3D.init(stage, { quality: R3D.tier, preserve: /[?&]r3dpreserve=1/.test(location.search), onLost: () => r3dFail("contextlost") });
     if (!ok) return r3dFail("init");
-    R3D.active = true; r3dSwapFX(true); r3dResize();
+    R3D.active = true;
+    try { document.body.classList.add("r3d-ui"); } catch (e) {}
+    r3dSwapFX(true); r3dResize();
     R3D.events.push({ t: Date.now(), ev: "active", tier: R3D.tier, loadMs: R3D.loadMs });
     r3dSyncChip();
   }).catch(e => { R3D.loading = false; r3dFail("load"); });
@@ -3797,7 +4526,9 @@ function r3dOverlay(shx, shy) {
   ctx.translate(offX, -S.camY);
   ctx.translate(shx, shy);
   drawObstacles(w, h);
+  if (window.PlacedCoins) PlacedCoins.draw(ctx);
   drawAmbientFront(w, h);
+  drawCrashMarks();
   drawParticles();
   drawPopups();
   if (R3D.hitbox) r3dDrawHitboxes(true);
@@ -4038,7 +4769,7 @@ function setLang(l) {
     if (!worldsOv.hidden) renderWorlds();
     if (!levelsOv.hidden) renderLevelGrid();
     try { if (dailyOv && !dailyOv.hidden) renderDaily(); } catch (e) {}
-    try { if (birdsOv && !birdsOv.hidden) renderBirds(); } catch (e) {}
+    try { if (birdsOv && !birdsOv.hidden) renderShop(); } catch (e) {}
   } catch (e) {}
   try { const el = document.getElementById("storageNotice"); if (el && !el.hidden && storageNoticeKey) { storageNoticeDismissed = false; const k = storageNoticeKey; storageNoticeKey = null; showStorageNotice(k); } } catch (e) {}
   if (window.Analytics) Analytics.emit("lang_change", { lang });
@@ -4163,11 +4894,18 @@ function isFreshPlayer() {
 }
 function boot() {
   // Identity V1: one class switches the whole Dipwing look (flag off ⇒ legacy look, same game)
-  try { if (window.IDENTITY && IDENTITY.V1) { document.body.classList.add("id-v1"); const bb = $("birdsBtn"); if (bb) bb.setAttribute("data-i18n", "closet_btn"); } } catch (e) {}
+  try { if (window.IDENTITY && IDENTITY.V1) { document.body.classList.add("id-v1"); const bb = $("birdsBtn"); if (bb) bb.setAttribute("data-i18n", "shop_btn"); } } catch (e) {}
   resize();
   // Stage C: versionerad sparning — migrera v1 → v2, återställ vid korruption
   let saveInfo = null;
-  try { if (window.SaveV2) saveInfo = SaveV2.load(); } catch (e) {}
+  try {
+    if (window.SaveV2) {
+      saveInfo = SaveV2.load();
+      // A page reload abandons an unstarted continue reservation: no charge is committed.
+      SaveV2.cancelContinue();
+      SaveV2.finishActiveRunWalletKeys();
+    }
+  } catch (e) {}
   try { store.migrateProgress(); } catch (e) {}
   // språk + rörelse + volym från v2 (sv/full/100 som standard)
   try {

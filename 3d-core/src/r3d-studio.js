@@ -13,7 +13,7 @@
 (function () {
 "use strict";
 const T = window.THREE_R3D; if (!T) return;
-const VERSION = "studio-r2.6-b12";
+const VERSION = "studio-r2.8-b12b-birds";
 const INK = 0x1A1433;
 const flag = (q, k, d) => { try { const v = new URLSearchParams(location.search).get(q); if (v != null && v !== "") return v; } catch (e) {}
   try { const s = window.localStorage.getItem(k); if (s != null && s !== "") return s; } catch (e) {} return d; };
@@ -183,6 +183,7 @@ function makeSwift(pal, planId, opts) {
   for (const zs of [1, -1]) {
     const piv = new T.Group(); piv.position.set(0.6, p.H * 0.55, zs * p.W * 0.55); rig.add(piv); // B-12: shoulder on the back, behind the head (the wing is now seen face-on)
     const wg = new T.Group(); piv.add(wg);
+    if (FW_PLANS[planId] && !opts.slab) { piv.matrixAutoUpdate = false; wings.push(piv); continue; } // B-12b: feather wing (built below), pivot follows the forearm
     let wgeo = wingGeoFor(zs > 0 ? wing : far, zs < 0); if (ao) applyAO(wgeo, zs > 0 ? "wingL" : "wingR");
     const slabN = wgeo.getAttribute("position").count, fparts = FS.map((f, k) => featherGeo(f, k, zs > 0 ? wing : far, zs < 0));
     const fRanges = []; let at = slabN; for (const g of fparts) { const n = g.getAttribute("position").count; fRanges.push([at, n]); at += n; }
@@ -211,14 +212,20 @@ function makeSwift(pal, planId, opts) {
   // wing band socket: centre of the chord at ~56 % span, oriented along the local chord (lead[5] ↔ trail[5])
   const la = lead[5], ta = trail[5], bandLen = Math.hypot(la[0] - ta[0], la[1] - ta[1]) * 1.25, bandRot = Math.atan2(la[1] - ta[1], la[0] - ta[0]);
   metrics.bandLen = bandLen;
+  let fw = null;
+  if (FW_PLANS[planId] && !opts.slab) { // B-12b: band on the forearm (both sockets authored on the near side; the far pivot gets the mirrored forearm frame)
+    const fb = FW_PLANS[planId].bones; metrics.bandLen = 9.5;
+    mk("wingL", wings[0].children[0], -1.4, 0.9, fb.fore * 0.55).rotation.y = Math.PI / 2; mk("wingR", wings[1].children[0], -1.4, 0.9, fb.fore * 0.55).rotation.y = Math.PI / 2;
+    fw = buildFeatherWings({ rig, plan: planId }, pal); fw.sock = [[wings[0], 1], [wings[1], -1]]; poseFeather(fw, { phi: 0, w: 0, profile: FLIGHT_BASE[planId] || FLIGHT_BASE.tornisA });
+  } else {
   mk("wingL", wings[0].children[0], (la[0] + ta[0]) / 2, 0, (la[1] + ta[1]) / 2).rotation.y = -bandRot;
-  mk("wingR", wings[1].children[0], (la[0] + ta[0]) / 2, 0, -(la[1] + ta[1]) / 2).rotation.y = bandRot;
+  mk("wingR", wings[1].children[0], (la[0] + ta[0]) / 2, 0, -(la[1] + ta[1]) / 2).rotation.y = bandRot; }
   mk("trail", rig, -p.L - 2, 0, 0);
   mk("fx", rig, 0, 0, 0);
   const hulls = []; root.traverse(o => { if (o.userData.hull) hulls.push(o); });
-  return { root, rig, parts: { body: bodyM, eyes, wingL: wings[0], wingR: wings[1], tail }, sockets: sock, metrics, hulls, equip: {}, plan: planId, p };
+  return { root, rig, parts: { body: bodyM, eyes, wingL: wings[0], wingR: wings[1], tail }, sockets: sock, metrics, hulls, equip: {}, plan: planId, p, fw };
 }
-function triCount(obj, withHulls) { let t = 0; obj.traverse(o => { if (o.isMesh && (withHulls || !o.userData.hull)) { const g = o.geometry; t += (g.index ? g.index.count : g.getAttribute("position").count) / 3; } }); return Math.round(t); }
+function triCount(obj, withHulls) { let t = 0; obj.traverse(o => { if (o.isMesh && (withHulls || !o.userData.hull)) { const g = o.geometry, per = (g.index ? g.index.count : g.getAttribute("position").count) / 3; t += per * (o.isInstancedMesh ? Math.max(0, o.count || 0) : 1); } }); return Math.round(t); }
 function meshCount(obj, withHulls) { let n = 0; obj.traverse(o => { if (o.isMesh && (withHulls || !o.userData.hull)) n++; }); return n; }
 
 /* ---------- 2. equipment, authored once in socket space, sized by the bird's metrics ---------- */
@@ -265,11 +272,7 @@ function buildScarf(bird, col, col2) {
   if (col2) ring.push(part(cyl(14), trs(0, 0, 0, 0, 0, Math.PI / 2, m.neckY + 1.35, 1.4, m.neckZ + 1.35), col2));
   withHull(merge(ring), vc("lam"), 0.45, g);
   const tails = new T.Group(); tails.name = "scarfTails"; tails.position.set(-1.5, m.neckY * 0.6, m.neckZ * 0.7); g.add(tails);
-  // r2.2: the 3 tail segments are ONE mesh; poseSwift bends it on the CPU (24 verts per segment, chain of z-rotations)
-  const segs = []; for (let i = 0; i < 3; i++) segs.push(part(new T.BoxGeometry(6.5, 3.4 - i * 0.5, 1.4), trs(-3.2, 0, 0), i === 1 && col2 ? col2 : col));
-  const segN = segs.map(q => q.getAttribute("position").count), geo = merge(segs);
-  const tm = new T.Mesh(geo, vc("lam")); tm.frustumCulled = false; tails.add(tm);
-  tails.userData.chain = { base: geo.getAttribute("position").array.slice(), nbase: geo.getAttribute("normal").array.slice(), segN };
+  const tm = new T.Mesh(scarfTailsGeo(col, col2), vc("lam")); tm.frustumCulled = false; tails.add(tm); // B-12b: volumetric ribbons (see poseScarfTails)
   return g;
 }
 
@@ -289,17 +292,20 @@ const FLIGHT_DEFAULTS = { twist0: 0.3 }; // constant feathering; 0.5 cost 7 % pr
 const FLIGHT_BASE = {
   // tip elevation above horizontal-back (deg) for the stroke top/bottom, glide and dive; hz = wingbeats/s; beats per tap;
   // dsf = downstroke share of the cycle; fold (0..1 of foldE/foldW rad) on the upstroke; lag = hand lag (rad); feather = primary flutter (rad)
-  tornisA: { top: 58, bot: 6, glide: 34, dive: 12, hz: 9, beats: 2, dsf: 0.5, foldE: 0.10, foldW: 0.10, diveFold: 0.35, lag: 0.06, feather: 0.06,
-    tilt: 0.08, twist: 0.03, bob: 0.35, pitch: 0.03, glideOsc: 0.025, glideFold: 0.06, spread: 0.04 }, // swift: fast shallow beats, long sickle glides, minimal fold
-  glod: { top: 70, bot: -32, glide: 22, dive: 2, hz: 11, beats: 3, dsf: 0.55, foldE: 0.30, foldW: 0.42, diveFold: 0.5, lag: 0.12, feather: 0.10,
-    tilt: 0.06, twist: 0.05, bob: 0.8, pitch: 0.06, glideOsc: 0.02, glideFold: 0.22, spread: 0.09 },    // robin: bursts of deep beats, folds into a bound
-  frost: { top: 66, bot: -26, glide: 30, dive: 8, hz: 4.8, beats: 2, dsf: 0.56, foldE: 0.18, foldW: 0.26, diveFold: 0.35, lag: 0.16, feather: 0.1,
-    tilt: 0.08, twist: 0.05, bob: 0.5, pitch: 0.045, glideOsc: 0.03, glideFold: 0.03, spread: 0.06 }  // tern: slow deep elegant strokes, wide glide
+  // These flight values are restored to the approved O2 feather-wing motion. Keep the approved Tornis stroke at 100° (66° / −34°).
+  tornisA: { top: 66, bot: -34, glide: 18, dive: 6, hz: 9, beats: 2, dsf: 0.55, foldE: 0.10, foldW: 0.10, diveFold: 0.85, lag: 0.06, feather: 0.06,
+    tilt: 0.08, twist: 0.03, bob: 0.35, pitch: 0.03, glideOsc: 0.025, glideFold: 0.22, spread: 0.04 }, // swift: approved O2 flight profile
+  glod: { top: 70, bot: -32, glide: 22, dive: 2, hz: 11, beats: 3, dsf: 0.55, foldE: 0.30, foldW: 0.42, diveFold: 0.92, lag: 0.12, feather: 0.10,
+    tilt: 0.06, twist: 0.05, bob: 0.8, pitch: 0.06, glideOsc: 0.02, glideFold: 0.30, spread: 0.09 },    // robin: O2 glide/fold profile restored
+  frost: { top: 66, bot: -26, glide: 30, dive: 8, hz: 4.8, beats: 2, dsf: 0.56, foldE: 0.18, foldW: 0.26, diveFold: 0.65, lag: 0.16, feather: 0.1,
+    tilt: 0.08, twist: 0.05, bob: 0.5, pitch: 0.045, glideOsc: 0.03, glideFold: 0.08, spread: 0.06 }  // tern: O2 glide/fold profile restored
 };
-const FLIGHT_BIRD = { // own character per bird on top of its plan
+const FLIGHT_BIRD = { // individual flight character per skin; species baselines live in FLIGHT_BASE
   tornis: {}, sunny: { hz: 8.4, glideOsc: 0.032 }, guld: { hz: 7.8, top: 62, bot: 2, lag: 0.08 }, natt: { hz: 7, lag: 0.1, feather: 0.09, bob: 0.3 },
   neon: { hz: 10.5, beats: 3, top: 54, bot: 10, lag: 0.04 }, kosmos: { hz: 6.6, beats: 2, glideOsc: 0.05, top: 62, bot: 0, feather: 0.08 },
-  lagoon: { hz: 8, lag: 0.09, bot: 2 }, ang: { hz: 9.6, glideOsc: 0.035, spread: 0.05 }, glod: {}, frost: {}
+  lagoon: { hz: 8, lag: 0.09, bot: 2 }, ang: { hz: 9.6, glideOsc: 0.035, spread: 0.05 },
+  glod: { hz: 11.4, beats: 3, lag: 0.15, feather: 0.12, bob: 0.95, pitch: 0.07 }, // species glide/fold values live in FLIGHT_BASE.glod
+  frost: { hz: 4.4, beats: 2, lag: 0.2, feather: 0.08, bob: 0.42, glideOsc: 0.018, spread: 0.045 } // tern: slow, broad strokes and long glides
 };
 const D2R = Math.PI / 180, TAU2 = Math.PI * 2;
 const sstep = x => { x = x < 0 ? 0 : x > 1 ? 1 : x; return x * x * (3 - 2 * x); };
@@ -376,6 +382,10 @@ function flyPose(bird, B, t, rm) {
   const aE = -P.foldE * fold + P.lag * 0.4 * vel, aW = -P.foldW * fold + P.lag * 0.6 * vel, bE = 0.04 + 0.03 * w * Math.cos(TAU2 * st.g);
   const nF = (bird.p.anat && bird.p.anat.primaries) || 4, fAng = [];
   for (let k = 0; k < nF; k++) { const c = k - (nF - 1) / 2; fAng.push(P.spread * c * (1 - fold * 0.8) - 0.05 * fold * k + P.feather * w * Math.sin(TAU2 * (F.cyc - 0.08 * k)) + P.lag * 0.5 * vel * (k + 1) / nF + (rm ? 0 : 0.012 * (1 - w) * Math.sin(t * 7.3 + k * 1.7))); }
+  if (bird.fw) { // B-12b feather wing: same state machine (phase, flap weight, dive, dead, hover, reduced motion)
+    poseFeather(bird.fw, { phi: F.cyc, w: F.w, dive: F.dive, dead: F.dead, amp: amp * (rm ? 0.6 : 1), rm, t, glideOsc: osc, profile: P });
+    const g = bird.fw.out.g; bird.flyBob = P.bob * 2 * w * -Math.cos(TAU2 * g) * amp * (rm ? 0 : 1); bird.flyPitch = P.pitch * w * Math.sin(TAU2 * (g - 0.1)) * amp * (rm ? 0 : 1);
+    F.out = { th, fold: bird.fw.out.fold, w, dive: F.dive, cyc: F.cyc, tap, vel: bird.fw.out.vel, elev: bird.fw.out.elev }; return; }
   const wl = bird.parts.wingL, wr = bird.parts.wingR, farOff = 24 * D2R;
   wingQuat(wl.quaternion, 1, th, tilt, twist); wingQuat(wr.quaternion, -1, th + farOff, tilt * 0.8, twist);
   const ml = bird.wingMeshL || (bird.wingMeshL = wingMeshOf(wl)), mr = bird.wingMeshR || (bird.wingMeshR = wingMeshOf(wr));
@@ -384,6 +394,193 @@ function flyPose(bird, B, t, rm) {
   bird.flyBob = P.bob * w * -Math.cos(TAU2 * st.g) * amp; bird.flyPitch = P.pitch * w * Math.sin(TAU2 * st.g) * amp;
   F.out = { th, fold, w, dive: F.dive, cyc: F.cyc, tap };
 }
+/* ============================================================
+   B-12b FEATHER WING (shared approved feather rig with species-specific plans for Tornis, Glöd and Frost; render-only).
+   Replaces the B-12 slab wing (one flat sickle slab + 4 slab primaries, read as "two stiff triangles") with an anatomical rig:
+     shoulder (elevation · sweep · pronation) → humerus → ELBOW (flex · dihedral) → forearm → WRIST (flex · dihedral · supination) → hand
+   53 feathers per wing, all instances of ONE closed feather blade. Tornis keeps its approved table; Glöd and Frost use their own proportions/bone lengths,
+   8 greater / 6 primary / 7 median / 8 lesser coverts (rounded tips, thin ink), 4 scapulars over the wing root; + 3 bone sleeves.
+   Draw calls: feathers + feather hull + sleeves + sleeve hull = 4 (B-12 wings were 4). Hulls are bird.hulls ⇒ hidden on the
+   low quality tier (−50 % feather triangles). Per-instance iShape = (load bend, sickle curve, ±width (− = rounded covert), ink/len).
+   Driven by the B-12 flight state machine (flyPose: phase, flap weight, dive, dead, hover, reduced motion); never touches S.
+   ============================================================ */
+const FW_PLANS = {
+  // Tornis: the already-approved long sickle swift rig. Keep this profile unchanged.
+  tornisA: { bones: { hum: 4.6, fore: 8.2, hand: 9.6 }, shoulder: [0.6, 4.6, 4.3], feathers: {} },
+  // Glöd: robin-like body plan – shorter, broader, rounder wing with a broad covert layer.
+  glod: { bones: { hum: 4.8, fore: 8.0, hand: 8.4 }, shoulder: [0.4, 5.2, 5.0],
+    feathers: { primaryLength: 0.78, primaryWidth: 1.28, primaryFanX: 1.35, primaryCurve: 0.58, secondaryLength: 1.12, secondaryWidth: 1.16, covertLength: 1.08, covertWidth: 1.12, coverStack: 0.32 },
+    articulation: { baseYaw: -18, sweepF: -16, elbowE: 18, elbowF: 70, wristE: -25, wristF: -98, pron: 8, foldMax: 0.82, fanBoost: 0.28, bend: 0.16, elbowUp: 38, handDown: 52 } },
+  // Frost: tern-like body plan – longer, narrower, swept wing with extended outer primaries.
+  frost: { bones: { hum: 5.0, fore: 9.5, hand: 10.8 }, shoulder: [0.8, 4.0, 3.7],
+    feathers: { primaryLength: 1.16, primaryWidth: 0.82, primaryFanX: -0.45, primaryCurve: 1.22, secondaryLength: 0.98, secondaryWidth: 0.9, covertLength: 0.9, covertWidth: 0.92, coverStack: 0.08 },
+    articulation: { baseYaw: -28, sweepF: -28, elbowE: 16, elbowF: 54, wristE: -25, wristF: -76, pron: 11, foldMax: 0.56, fanBoost: 0.12, bend: 0.1, elbowUp: 24, handDown: 36 } }
+};
+const FW_P = { baseYaw: -24, sweepE: 0, sweepF: -22, elbowE: 20, elbowF: 64, wristE: -30, wristF: -88, pron: 9, foldMax: 0.7,
+  fanBoost: 0.18, bend: 0.12, elbowUp: 30, handDown: 44 }; // articulation only; stroke/flight values live in FLIGHT_BASE + FLIGHT_BIRD
+function fwUnit() { // feather blade: length +x (0..1), vanes ±z (outer narrower), normal +y, closed diamond section (raised rachis, cupped vanes)
+  const N = 6, pos = [], col = [], idx = [];
+  const prof = u => { const b = Math.pow(Math.sin(Math.PI * Math.min(1, 0.12 + u * 0.95)), 0.7); const tip = u > 0.72 ? Math.pow(1 - (u - 0.72) / 0.28, 0.85) : 1; return 0.5 * b * tip + 0.04 * (1 - u); };
+  for (let i = 0; i <= N; i++) { const u = i / N, w = prof(u), h = 0.03 * (1 - u * 0.8) + 0.004, cup = -0.018 * w, sh = 1 - 0.22 * u;
+    pos.push(u, cup, w * 0.62, u, h, 0, u, cup, -w, u, -h * 0.25, 0);
+    col.push(0.78 * sh, 0.78 * sh, 0.82 * sh, 1.12 * sh, 1.12 * sh, 1.1 * sh, 0.72 * sh, 0.72 * sh, 0.76 * sh, 0.9 * sh, 0.9 * sh, 0.92 * sh); }
+  for (let i = 0; i < N; i++) { const a = i * 4, b = a + 4; for (let j = 0; j < 4; j++) { const k = (j + 1) % 4; idx.push(a + j, b + j, a + k, a + k, b + j, b + k); } }
+  idx.push(0, 1, 2, 0, 2, 3);
+  const g = new T.BufferGeometry(); g.setIndex(idx); g.setAttribute("position", new T.Float32BufferAttribute(pos, 3)); g.setAttribute("color", new T.Float32BufferAttribute(col, 3)); g.computeVertexNormals(); return g;
+}
+// rounded covert tip: widen the blade toward a semicircular end (factor = round profile / blade profile), only when iShape.z < 0
+const FW_GLSL = "attribute vec4 iShape;\nfloat fwProf(float u){ float b = pow(sin(3.14159265 * min(1.0, 0.12 + u * 0.95)), 0.7); float tp = u > 0.72 ? pow(max(0.0, 1.0 - (u - 0.72) / 0.28), 0.85) : 1.0; return 0.5 * b * tp + 0.04 * (1.0 - u); }\n"
+  + "float fwRound(float u){ float r = u < 0.5 ? 0.5 : 0.5 * sqrt(max(0.0, 1.0 - pow((u - 0.5) / 0.5, 2.0))); return clamp(r / max(fwProf(u), 0.02), 1.0, 2.6); }\n";
+const FW_BEND = "float fu = clamp(position.x, 0.0, 1.0); vec3 transformed = vec3(position); transformed.z *= abs(iShape.z) * (iShape.z < 0.0 ? fwRound(fu) : 1.0); transformed.y += iShape.x * fu * fu; transformed.z += iShape.y * fu * fu;";
+function fwMat(hull) {
+  const k = "fw" + (hull || "fill"); if (MAT.has(k)) return MAT.get(k);
+  const m = hull ? new T.MeshBasicMaterial({ color: new T.Color(INK), side: T.BackSide }) : new T.MeshLambertMaterial({ vertexColors: true, side: T.DoubleSide, emissive: new T.Color(0.42, 0.42, 0.42) });
+  m.onBeforeCompile = s => {
+    s.vertexShader = FW_GLSL + s.vertexShader.replace("#include <begin_vertex>", FW_BEND + (hull ? " transformed += normalize(vec3(normal.x, normal.y, normal.z / max(abs(iShape.z), 0.05))) * " + hull.toFixed(3) + " * iShape.w;" : ""));
+    if (!hull) { s.vertexShader = s.vertexShader.replace("#include <beginnormal_vertex>", "vec3 objectNormal = normalize(vec3(normal.x, normal.y, normal.z / max(abs(iShape.z), 0.05)));");
+      s.fragmentShader = s.fragmentShader.replace("vec3 totalEmissiveRadiance = emissive;", "vec3 totalEmissiveRadiance = emissive * vColor.rgb;"); } };
+  m.customProgramCacheKey = () => "dw-b12b-" + k; MAT.set(k, m); return m;
+}
+function fwSleeveMat(hull) { const k = "fwS" + (hull || "fill"); if (MAT.has(k)) return MAT.get(k);
+  let m; if (hull) { m = new T.MeshBasicMaterial({ color: new T.Color(INK), side: T.BackSide }); m.onBeforeCompile = s => { s.vertexShader = s.vertexShader.replace("#include <begin_vertex>", "vec3 transformed = vec3(position) + normal * " + hull.toFixed(3) + ";"); }; m.customProgramCacheKey = () => "dw-b12b-" + k; }
+  else m = new T.MeshLambertMaterial({ vertexColors: true, emissive: new T.Color(0.12, 0.12, 0.16) });
+  MAT.set(k, m); return m; }
+function fwTable(profile) { // bone 0 hum / 1 fore / 2 hand / −1 body · t along bone · x chord offset · y layer · gE/gF angle from the bone toward the trailing side (deg) extended/folded
+  const F = [], L = (a, b, k) => a + (b - a) * k, Q = profile || {};
+  for (let k = 0; k < 10; k++) { const q = k / 9; F.push({ type: "P", k, bone: 2, t: 0.12 + 0.88 * Math.pow(q, 0.85), x: -0.35, y: -0.05 * k, gE: L(44, 5, Math.pow(q, 0.9)), gF: L(14, 2, q), L: L(14, 30, Math.pow(q, 0.75)) - (k === 9 ? 1.4 : 0), wr: L(0.24, 0.15, q), sh: 0.62, tw: L(14, 44, q), curve: -0.07, bendK: L(0.4, 1, q) }); }
+  for (let k = 0; k < 8; k++) { const q = k / 7; F.push({ type: "S", k, bone: 1, t: 1 - 0.95 * q, x: -0.35, y: 0.02 * k, gE: L(78, 98, q), gF: L(70, 92, q), L: L(8.6, 7.6, q), wr: 0.38, sh: 0.72, tw: 6, curve: 0.02, bendK: 0.25 }); }
+  for (let k = 0; k < 2; k++) F.push({ type: "T", k, bone: 0, t: 0.75 - 0.45 * k, x: -0.4, y: 0.25, gE: 104 + 8 * k, gF: 112, L: 7.4 - k, wr: 0.42, sh: 0.78, tw: 0, curve: 0.04, bendK: 0.1 });
+  for (let k = 0; k < 8; k++) { const q = k / 7; F.push({ type: "GC", k, bone: 1, t: 1 - 0.95 * q, x: 0.35, y: 0.55, gE: L(84, 98, q), gF: L(78, 94, q), L: 5.0, wr: 0.62, sh: 0.92, tw: 0, curve: 0.03, bendK: 0.05 }); }
+  for (let k = 0; k < 6; k++) { const q = k / 5; F.push({ type: "PC", k, bone: 2, t: 0.08 + 0.7 * q, x: 0.25, y: 0.5, gE: L(62, 22, q), gF: L(18, 6, q), L: L(5.6, 6.6, q), wr: 0.42, sh: 0.86, tw: 0, curve: -0.03, bendK: 0.05 }); }
+  for (let k = 0; k < 7; k++) { const q = k / 6, onHum = q > 0.72; F.push({ type: "MC", k, bone: onHum ? 0 : 1, t: onHum ? 0.9 - (q - 0.72) * 2 : 0.95 - q * 1.2, x: 1.05, y: 0.9, gE: L(88, 100, q), gF: L(84, 98, q), L: 3.7, wr: 0.66, sh: 1.0, tw: 0, curve: 0.03, bendK: 0 }); }
+  for (let k = 0; k < 8; k++) { const q = k / 7, b = q < 0.2 ? 2 : q < 0.72 ? 1 : 0, t = b === 2 ? 0.45 - q * 2 : b === 1 ? 1 - (q - 0.2) / 0.52 * 0.95 : 1 - (q - 0.72) / 0.28 * 0.9;
+    F.push({ type: "LC", k, bone: b, t, x: 1.6, y: 1.15, gE: L(72, 100, q), gF: L(50, 98, q), L: 2.9, wr: 0.72, sh: 1.08, tw: 0, curve: 0, bendK: 0 }); }
+  for (let k = 0; k < 4; k++) F.push({ type: "SC", k, bone: -1, t: 0, x: 2.0 - k * 2.4, y: 1.2 + 0.1 * k, gE: 0, gF: 0, L: 7.5 - k * 0.6, wr: 0.42, sh: 0.86, tw: 0, curve: 0.02, bendK: 0 });
+  // Species-specific planforms use the same approved articulated feather rig, but distinct proportions.
+  // Keep the 53-feather layer count stable; only geometry tables and bone lengths differ by species.
+  for (const f of F) {
+    if (f.type === "P") {
+      const q = f.k / 9;
+      f.L *= Q.primaryLength == null ? 1 : Q.primaryLength;
+      f.wr *= Q.primaryWidth == null ? 1 : Q.primaryWidth;
+      f.x += (Q.primaryFanX || 0) * (q - 0.5);
+      f.curve *= Q.primaryCurve == null ? 1 : Q.primaryCurve;
+    } else if (f.type === "S" || f.type === "T") {
+      f.L *= Q.secondaryLength == null ? 1 : Q.secondaryLength;
+      f.wr *= Q.secondaryWidth == null ? 1 : Q.secondaryWidth;
+    } else {
+      f.L *= Q.covertLength == null ? 1 : Q.covertLength;
+      f.wr *= Q.covertWidth == null ? 1 : Q.covertWidth;
+      f.y += (Q.coverStack || 0) * (f.k / 7);
+    }
+  }
+  return F;
+}
+function buildFeatherWings(b, pal) {
+  const A = FW_PLANS[b.plan]; if (!A) return null;
+  const F = fwTable(A.feathers), nW = F.length, n = nW * 2, geo = fwUnit();
+  const sg = new T.CylinderGeometry(1, 1, 1, 7, 1, false); sg.rotateX(Math.PI / 2); sg.setAttribute("color", new T.Float32BufferAttribute(new Float32Array(sg.getAttribute("position").count * 3).fill(1), 3));
+  const fill = new T.InstancedMesh(geo, fwMat(0), n), hull = new T.InstancedMesh(geo, fwMat(0.55), n);
+  const IBA = fill.instanceMatrix.constructor, shape = new IBA(new Float32Array(n * 4), 4); geo.setAttribute("iShape", shape);
+  const [body, dark, wing, far] = pal.map(h => new T.Color(h)), C = new T.Color();
+  for (let s = 0; s < 2; s++) for (let i = 0; i < nW; i++) { const f = F[i], j = s * nW + i, cov = /C$/.test(f.type);
+    const base = f.type === "P" ? dark.clone().lerp(wing, 0.25) : f.type === "S" || f.type === "T" ? dark.clone().lerp(wing, 0.55) : f.type === "SC" ? body.clone() : wing.clone();
+    C.copy(base).multiplyScalar(f.sh * 1.05); if (s === 1) C.multiplyScalar(0.62).lerp(far, 0.25); fill.setColorAt(j, C);
+    shape.array[j * 4 + 2] = cov ? -f.wr : f.wr; shape.array[j * 4 + 3] = (cov ? 0.45 : 1) / f.L; }
+  fill.instanceColor.needsUpdate = true;
+  const sleeves = new T.InstancedMesh(sg, fwSleeveMat(0), 6), shull = new T.InstancedMesh(sg, fwSleeveMat(0.45), 6);
+  for (let s = 0; s < 2; s++) for (let k = 0; k < 3; k++) { C.copy(wing).multiplyScalar(1.02); if (s === 1) C.multiplyScalar(0.62).lerp(far, 0.25); sleeves.setColorAt(s * 3 + k, C); }
+  sleeves.instanceColor.needsUpdate = true;
+  for (const m of [fill, hull, sleeves, shull]) { m.frustumCulled = false; m.instanceMatrix.setUsage(35048); /* DynamicDrawUsage */ }
+  hull.userData.hull = shull.userData.hull = true; hull.renderOrder = shull.renderOrder = -1;
+  const g = new T.Group(); g.name = "featherWings"; g.add(shull, sleeves, hull, fill); b.rig.add(g);
+  const M = []; for (let i = 0; i < 8; i++) M.push(new T.Matrix4());
+  return b.fw = { F, nW, n, fill, hull, sleeves, shull, shape, group: g, M, A, P: Object.assign({}, FW_P, A.articulation || {}), planId: b.plan, out: null };
+}
+const _fm = []; for (let i = 0; i < 8; i++) _fm.push(new T.Matrix4()); const _fe = new T.Euler();
+function fwRot(out, rx, ry, rz) { _fe.set(rx, ry, rz, "XYZ"); return out.makeRotationFromEuler(_fe); }
+function fwConjZ(out, m) { const a = m.elements, o = out.elements; for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) { const i = r + 4 * c; o[i] = (r === 2) !== (c === 2) ? -a[i] : a[i]; } return out; }
+function fwStroke(phi, dsf) { const f = phi - Math.floor(phi), g = f < dsf ? 0.5 * f / dsf : 0.5 + 0.5 * (f - dsf) / (1 - dsf), up = g > 0.5 ? (g - 0.5) * 2 : 0;
+  return { g, c: Math.cos(TAU2 * g), vel: Math.sin(TAU2 * g), fold: g > 0.5 ? Math.pow(Math.sin(Math.PI * Math.pow(up, 0.8)), 1.3) : 0 }; }
+/* s = { phi, w (flap weight), dive, dead, amp (hover/rm amplitude), rm, t, lag (per-bird scale), flutter (per-bird scale), glideOsc } */
+function poseFeather(fw, s) {
+  const P = fw.P || FW_P, Q = s.profile || FLIGHT_BASE[fw.planId] || FLIGHT_BASE.tornisA;
+  const D = D2R, w = s.w * (1 - (s.dead || 0)), amp = s.amp == null ? 1 : s.amp;
+  const st = fwStroke(s.phi, Q.dsf), sL = fwStroke(s.phi - 0.07, Q.dsf), sL2 = fwStroke(s.phi - 0.13, Q.dsf);
+  const mid = (Q.top + Q.bot) / 2, half = (Q.top - Q.bot) / 2 * amp;
+  const lag = (Q.lag == null ? 0.06 : Q.lag) / 0.06;
+  // flap pose
+  const fE = mid + half * st.c, fF = st.fold * P.foldMax * Math.min(1, amp + 0.2), fV = st.vel * amp, fVL = sL.vel * amp * lag, fVL2 = sL2.vel * amp * lag;
+  // base pose: glide ↔ dive ↔ dead
+  const dv = s.dive || 0, dd = s.dead || 0;
+  const bE = (Q.glide + (s.glideOsc || 0) * 40) * (1 - dv) + Q.dive * dv, bF = Q.glideFold * (1 - dv) + Q.diveFold * dv;
+  const elev = (bE * (1 - dd) + 40 * dd) * (1 - w) + fE * w, fold = (bF * (1 - dd) + 0.45 * dd) * (1 - w) + fF * w;
+  const vel = fV * w, velL = fVL * w, velL2 = fVL2 * w;
+  const sweep = P.sweepE + (P.sweepF - P.sweepE) * fold, elbow = P.elbowE + (P.elbowF - P.elbowE) * fold, wrist = P.wristE + (P.wristF - P.wristE) * fold;
+  const upF = st.fold * w; // upstroke-only inverted V (wrist leads up, hand trails down): reads as a bent wing from the side
+  const elbowDih = P.elbowUp * upF + 6 * velL + 10 * dd + (Q.foldE || 0) * 20 * velL,
+    wristDih = -P.handDown * upF + 14.4 * velL2 - 20 * dd + (Q.foldW || 0) * 16 * velL2;
+  const pron = -P.pron * vel + 6 * fold + (Q.twist || 0) / D, handTwist = -P.pron * 0.8 * velL + 24 * upF + (Q.tilt || 0) / D;
+  const fan = 1 + P.fanBoost * Math.max(0, vel);
+  const A = fw.A, Bn = A.bones, SH = A.shoulder, M = fw.M, X = _fm;
+  const base = M[0].makeTranslation(SH[0], SH[1], SH[2]).multiply(X[7].makeRotationY(P.baseYaw * D)); // Q.tilt / Q.twist are applied once through pron / handTwist below
+  const sh = M[1].copy(base).multiply(fwRot(X[0], -elev * D, sweep * D, pron * D));
+  const el = M[2].copy(sh).multiply(X[0].makeTranslation(0, 0, Bn.hum)).multiply(fwRot(X[1], -elbowDih * D, elbow * D, 0));
+  const wr = M[3].copy(el).multiply(X[0].makeTranslation(0, 0, Bn.fore)).multiply(fwRot(X[1], -wristDih * D, wrist * D, handTwist * D));
+  const body = M[5].identity(), bones = [sh, el, wr], blen = [Bn.hum, Bn.fore, Bn.hand];
+  const F = fw.F, nW = fw.nW, SA = fw.shape.array, fm = X[2], loc = X[3], tmp = X[4], fr = X[5];
+  const flut = s.rm ? 0 : (Q.feather == null ? 0.015 : Q.feather * 0.25);
+  for (let i = 0; i < nW; i++) { const f = F[i];
+    let par;
+    if (f.bone < 0) { par = body; loc.makeTranslation(SH[0] + f.x, SH[1] + f.y + Math.max(0, elev) * 0.012, SH[2] - 1.6).multiply(fwRot(tmp, -(Math.max(-10, elev) * 0.22 + 6) * D, 0, (-6 + 2 * fold) * D)).multiply(tmp.makeRotationY(Math.PI - 0.08 * f.k)); }
+    else { par = bones[f.bone];
+      const gam = f.type === "P" ? f.gE * fan + (f.gF - f.gE * fan) * fold : f.gE + (f.gF - f.gE) * fold;
+      const fl = f.type === "P" ? flut * Math.sin((s.t || 0) * 41 + f.k * 1.9) : 0;
+      const spreadFan = f.type === "P" ? ((f.k - 4.5) / 4.5) * (Q.spread || 0) : 0;
+      loc.makeTranslation(f.x, f.y, f.t * blen[f.bone]).multiply(fwRot(tmp, 0, -Math.PI / 2 - gam * D, 0)).multiply(X[6].makeRotationX(f.tw * fold * D + fl + spreadFan)); }
+    fm.multiplyMatrices(par, loc).multiply(tmp.makeScale(f.L, f.L, f.L));
+    const bend = -P.bend * f.bendK * (0.65 * velL + 0.35 * velL2) * (s.rm ? 0.5 : 1) + 0.03 * f.bendK * fold;
+    SA[i * 4] = SA[(nW + i) * 4] = bend; SA[i * 4 + 1] = f.curve; SA[(nW + i) * 4 + 1] = -f.curve;
+    fw.fill.setMatrixAt(i, fm); fw.hull.setMatrixAt(i, fm); fwConjZ(fr, fm); fw.fill.setMatrixAt(nW + i, fr); fw.hull.setMatrixAt(nW + i, fr); }
+  const rad = [1.45, 1.05, 0.7];
+  for (let k = 0; k < 3; k++) { fm.copy(bones[k]).multiply(tmp.makeTranslation(0.45, 0.25, blen[k] / 2)).multiply(X[6].makeScale(rad[k], rad[k] * 0.7, blen[k] + 0.6));
+    fw.sleeves.setMatrixAt(k, fm); fw.shull.setMatrixAt(k, fm); fwConjZ(fr, fm); fw.sleeves.setMatrixAt(3 + k, fr); fw.shull.setMatrixAt(3 + k, fr); }
+  for (const m of [fw.fill, fw.hull, fw.sleeves, fw.shull]) m.instanceMatrix.needsUpdate = true; fw.shape.needsUpdate = true;
+  // wing sockets (wing band) ride on the forearm
+  if (fw.sock) for (const [o, sd] of fw.sock) { if (sd > 0) o.matrix.copy(el); else fwConjZ(o.matrix, el); o.matrixWorldNeedsUpdate = true; }
+  return fw.out = { phi: s.phi, g: st.g, elev, fold, vel, elbow, wrist, sweep, w };
+}
+
+/* B-12b: volumetric scarf tails (was 3 flat boxes = a flat strip from above): two tapered ribbons with a lens-shaped section,
+   twisting along their length; CPU-posed chain (pitch + sideways sway + twist) – one mesh, ≈ 170 triangles. Render-only. */
+const SCARF_TAILS = [{ z: 0.8, len: 13.5, w: 3.6, th: 1.5, ph: 0 }, { z: -0.7, len: 10.5, w: 3.0, th: 1.3, ph: 1.7 }];
+function scarfTailsGeo(col, col2) {
+  const RING = 6, NR = 6, pos = [], nrm = [], colA = [], idx = [], meta = []; const c1 = new T.Color(col), c2 = new T.Color(col2 || col);
+  SCARF_TAILS.forEach((tl, ti) => { const v0 = pos.length / 3;
+    for (let r = 0; r < NR; r++) { const s = r / (NR - 1), w = tl.w * (1 - 0.3 * s) / 2, th = tl.th * (1 - 0.45 * s) / 2, cc = ti === 1 && col2 ? c2 : c1, sh = 1 - 0.12 * s;
+      for (let k = 0; k < RING; k++) { const a = k / RING * Math.PI * 2, ly = Math.cos(a) * w, lz = Math.sin(a) * th; let ny = Math.cos(a) / w, nz = Math.sin(a) / th; const l = Math.hypot(ny, nz); ny /= l; nz /= l;
+        pos.push(0, ly, lz); nrm.push(0, ny, nz); colA.push(cc.r * sh, cc.g * sh, cc.b * sh); meta.push(ti, r, ly, lz, ny, nz); } }
+    for (let r = 0; r < NR - 1; r++) for (let k = 0; k < RING; k++) { const a = v0 + r * RING + k, b = v0 + r * RING + (k + 1) % RING, c = a + RING, d = b + RING; idx.push(a, c, b, b, c, d); }
+    const e = v0 + (NR - 1) * RING; for (let k = 1; k < RING - 1; k++) idx.push(e, e + k, e + k + 1); });
+  const g = new T.BufferGeometry(); g.setIndex(idx); g.setAttribute("position", new T.Float32BufferAttribute(pos, 3)); g.setAttribute("normal", new T.Float32BufferAttribute(nrm, 3)); g.setAttribute("color", new T.Float32BufferAttribute(colA, 3));
+  g.userData.scarf = { meta: new Float32Array(meta), NR }; return g;
+}
+const _sm = new T.Matrix4(), _se = new T.Euler(), _sp = [];
+function poseScarfTails(sc, t, vy, rm, fo) {
+  const m = sc && sc.children[0]; if (!m || !m.geometry.userData.scarf) return; const G = m.geometry, S = G.userData.scarf, P = G.getAttribute("position").array, N = G.getAttribute("normal").array, NR = S.NR, me = S.meta, e = _sm.elements;
+  const lift = -Math.max(-0.2, Math.min(0.3, (vy || 0) / 1400)), beat = fo ? fo.vel || 0 : 0;
+  SCARF_TAILS.forEach((tl, ti) => { let x = 0, y = 0, z = tl.z, a = 0, yw = 0; const seg = tl.len / (NR - 1);
+    for (let r = 0; r < NR; r++) { const s = r / (NR - 1), wv = rm ? 0 : 1;
+      a += (r ? 0.04 : -0.5) + lift * (r ? 0.25 : 1) + wv * Math.sin(t * 2.2 * TAU2 - r * 0.9 + tl.ph) * (0.05 + 0.05 * s) + wv * 0.03 * beat;
+      yw = wv * Math.sin(t * 1.7 * TAU2 - r * 0.8 + tl.ph) * 0.4 * s + (ti ? 0.2 : -0.3) * s;
+      const tw = 0.9 * s * (ti ? -1 : 1) + wv * Math.sin(t * 2.6 * TAU2 - r + tl.ph) * 0.35 * s;
+      _se.set(tw, yw, a, "ZYX"); _sm.makeRotationFromEuler(_se); _sp[r] = [x, y, z];
+      const vb = (ti * NR + r) * 6; for (let v = vb; v < vb + 6; v++) { const ly = me[v * 6 + 2], lz = me[v * 6 + 3], ny = me[v * 6 + 4], nz = me[v * 6 + 5];
+        P[v * 3] = x + e[4] * ly + e[8] * lz; P[v * 3 + 1] = y + e[5] * ly + e[9] * lz; P[v * 3 + 2] = z + e[6] * ly + e[10] * lz;
+        N[v * 3] = e[4] * ny + e[8] * nz; N[v * 3 + 1] = e[5] * ny + e[9] * nz; N[v * 3 + 2] = e[6] * ny + e[10] * nz; }
+      x -= e[0] * seg; y -= e[1] * seg; z -= e[2] * seg; } });
+  G.getAttribute("position").needsUpdate = G.getAttribute("normal").needsUpdate = true;
+}
 /* ---------- pose (same inputs as render3d.js updateBird: identity.wingAngle degrees, vy, rot, blink…) ---------- */
 function poseSwift(bird, B, t, rm) {
   bird.rig.rotation.set(B.menu && !rm ? 0.28 + Math.sin(t * 0.6) * 0.1 : 0.24, B.menu && !rm ? -0.4 + Math.sin(t * 0.5) * 0.25 : -0.3, 0);
@@ -391,15 +588,7 @@ function poseSwift(bird, B, t, rm) {
   flyPose(bird, B, t, rm);
   bird.parts.tail.rotation.z = rm ? 0 : Math.sin(t * 3.1) * 0.05 - Math.max(-0.2, Math.min(0.25, B.vy / 2400));
   for (const e of bird.parts.eyes) e.scale.y = B.dead ? 0.15 : B.blink ? 0.12 : B.happy ? 0.55 : 1;
-  const sc = bird.root.getObjectByName("scarfTails");
-  if (sc && sc.userData.chain) { const C = sc.userData.chain, m = sc.children[0], pa = m.geometry.getAttribute("position"), na = m.geometry.getAttribute("normal"), P = pa.array, N = na.array;
-    let ox = 0, oy = 0, ang = 0, v0 = 0;
-    for (let i = 0; i < 3; i++) { ang += (i ? 0 : -0.55) + (rm ? 0 : Math.sin(t * 2.2 * Math.PI * 2 + i) * 0.16) - Math.max(-0.2, Math.min(0.3, B.vy / 1400));
-      const c = Math.cos(ang), sn = Math.sin(ang);
-      for (let v = v0; v < v0 + C.segN[i]; v++) { const x = C.base[v * 3], y = C.base[v * 3 + 1]; P[v * 3] = ox + x * c - y * sn; P[v * 3 + 1] = oy + x * sn + y * c; P[v * 3 + 2] = C.base[v * 3 + 2];
-        const nx = C.nbase[v * 3], ny = C.nbase[v * 3 + 1]; N[v * 3] = nx * c - ny * sn; N[v * 3 + 1] = nx * sn + ny * c; }
-      v0 += C.segN[i]; ox += -6 * c; oy += -6 * sn; }
-    pa.needsUpdate = na.needsUpdate = true; }
+  poseScarfTails(bird.root.getObjectByName("scarfTails"), t, B.vy, rm, bird.fly && bird.fly.out); // B-12b volumetric tails
   const pr = bird.root.getObjectByName("item:propeller"); if (pr) pr.rotation.y = rm ? 0.6 : t * 14;
 }
 
@@ -517,13 +706,13 @@ function buildGV(R) {
   const rp = []; const rr = lcg(77);
   for (let i = 0; i < 9; i++) { const g = new T.IcosahedronGeometry(1, 0); rp.push(part(g, trs((i % 3 - 1) * 120 + (rr() - 0.5) * 50, 120 + Math.floor(i / 3) * 170 + rr() * 40, (rr() - 0.5) * 40, rr(), rr(), rr(), 110 + rr() * 50, 130 + rr() * 40, 70), i % 2 ? "#A9B3B4" : "#B9C2BE")); }
   rp.push(part(new T.IcosahedronGeometry(1, 0), trs(-150, 560, 0, 0.3, 0.2, 0, 140, 60, 80), "#6FAE4F")); rp.push(part(new T.IcosahedronGeometry(1, 0), trs(140, 560, 0, 0.1, 0.5, 0, 130, 55, 80), "#6FAE4F"));
-  const cliff = new T.Mesh(merge(rp), rockM); WF.add(cliff);
+  const cliff = new T.Mesh(merge(rp), rockM); WF.add(cliff); GV.wfCliff = cliff;
   GV.waterTex = canvasTex(64, 256, (x, w, h) => { x.fillStyle = "#CFEFFF"; x.fillRect(0, 0, w, h); const r = lcg(5);
     for (let i = 0; i < 70; i++) { x.fillStyle = r() > 0.5 ? "rgba(255,255,255,0.9)" : "rgba(140,200,235,0.8)"; x.fillRect(Math.floor(r() * w), Math.floor(r() * h), 2 + Math.floor(r() * 4), 20 + Math.floor(r() * 60)); } });
   GV.waterTex.wrapS = GV.waterTex.wrapT = 1000; // RepeatWrapping
   GV.waterTex.repeat.set(1, 2);
-  const fall = new T.Mesh(new T.PlaneGeometry(64, 620), new T.MeshBasicMaterial({ map: GV.waterTex, transparent: true, opacity: 0.92 })); fall.position.set(0, 300, 120); WF.add(fall);
-  const pool = new T.Mesh(new T.CylinderGeometry(150, 170, 6, 18), new T.MeshLambertMaterial({ color: "#8FD3F0" })); pool.position.set(0, -8, 150); WF.add(pool);
+  const fall = new T.Mesh(new T.PlaneGeometry(64, 620), new T.MeshBasicMaterial({ map: GV.waterTex, transparent: true, opacity: 0.92 })); fall.position.set(0, 300, 120); WF.add(fall); GV.wfFall = fall;
+  const pool = new T.Mesh(new T.CylinderGeometry(150, 170, 6, 18), new T.MeshLambertMaterial({ color: "#8FD3F0" })); pool.position.set(0, -8, 150); WF.add(pool); GV.wfPool = pool;
   GV.mistTex = canvasTex(64, 64, (x) => { const g = x.createRadialGradient(32, 32, 2, 32, 32, 32); g.addColorStop(0, "rgba(255,255,255,0.95)"); g.addColorStop(1, "rgba(255,255,255,0)"); x.fillStyle = g; x.fillRect(0, 0, 64, 64); });
   // perf: mist puffs, sun shafts and the distant flock are single instanced draws (proxies hold the per-item transform)
   GV.mistI = new T.InstancedMesh(new T.PlaneGeometry(1, 1), new T.MeshBasicMaterial({ map: GV.mistTex, transparent: true, depthWrite: false, opacity: 0.7 }), 4); GV.mistI.frustumCulled = false; WF.add(GV.mistI);
@@ -532,7 +721,8 @@ function buildGV(R) {
   const rd = []; const rq = lcg(91); for (let i = 0; i < 26; i++) { const a = rq() * 6.28, r = 150 + rq() * 30, h = 26 + rq() * 26; rd.push(part(new T.CylinderGeometry(0.8, 1.4, h, 3), trs(Math.cos(a) * r, h / 2, 150 + Math.sin(a) * r * 0.45, (rq() - 0.5) * 0.2, 0, (rq() - 0.5) * 0.25), "#5E9A3E"));
     if (i % 3 === 0) rd.push(part(new T.CylinderGeometry(2.2, 2.2, 8, 5), trs(Math.cos(a) * r, h + 2, 150 + Math.sin(a) * r * 0.45), "#6B4423")); }
   for (let i = 0; i < 7; i++) { const a = rq() * 6.28, r = 40 + rq() * 90; rd.push(part(new T.CylinderGeometry(9, 9, 1, 8), trs(Math.cos(a) * r, -3.5, 150 + Math.sin(a) * r * 0.5), "#5FA456")); if (i % 2) rd.push(part(new T.IcosahedronGeometry(1, 0), trs(Math.cos(a) * r + 3, -1.5, 150 + Math.sin(a) * r * 0.5, 0, 0, 0, 3), "#F6C1E0")); }
-  WF.add(new T.Mesh(merge(rd), flatVC));
+  GV.wfReeds = new T.Mesh(merge(rd), flatVC.clone()); // private fade material: must not dim shared bushes, ducks, deer or rabbits
+  WF.add(GV.wfReeds);
   const duckG = merge([part(new T.IcosahedronGeometry(1, 1), trs(0, 0, 0, 0, 0, 0, 9, 5, 6), "#F4F1E6"), part(new T.IcosahedronGeometry(1, 1), trs(7, 6, 0, 0, 0, 0, 3.6), "#3C8A55"),
     part(new T.ConeGeometry(1.4, 4, 4), trs(11.5, 5.6, 0, 0, 0, -Math.PI / 2), "#F2A33A"), part(new T.ConeGeometry(3, 5, 4), trs(-9, 3, 0, 0, 0, Math.PI / 2.4), "#E6E1D2")]);
   GV.ducks = new T.InstancedMesh(duckG, flatVC, 3); GV.ducks.frustumCulled = false; WF.add(GV.ducks); GV.duckItems = [0, 1, 2].map(i => ({ ph: i * 2.1, r: 50 + i * 30 }));
@@ -568,6 +758,14 @@ function buildGV(R) {
   GV.moteP = new T.Points(mg, new T.PointsMaterial({ color: "#FFF6C8", size: 2.2, sizeAttenuation: false, transparent: true, opacity: 0.55, depthWrite: false, vertexColors: true })); GV.moteP.frustumCulled = false; G.add(GV.moteP);
   // perf: double-sided transparent materials would render in two passes (back+front) – one pass is visually identical for these flat cards
   G.traverse(n => { const m = n.material; if (m && m.side === T.DoubleSide) m.forceSinglePass = true; });
+  // B-13: all near/mid foreground instance groups are screened against the flight opening. Sky/weather layers stay exempt.
+  const gvGapExempt = new Set([GV.clouds, GV.shaftI, GV.flockI, GV.mistI]);
+  GV.guardMeshes = []; G.traverse(n => { if (n.isInstancedMesh && !gvGapExempt.has(n)) GV.guardMeshes.push(n); });
+  // Fixed waterfall components are not InstancedMesh; guard each component independently so the entire set-piece
+  // does not disappear just because one small piece approaches an opening.
+  GV.guardStatic = [GV.wfCliff, GV.wfFall, GV.wfPool, GV.wfReeds].filter(Boolean);
+  GV.guardStaticGains = GV.guardStatic.map(() => 1);
+  GV.guardStats = { checked: 0, hits: 0, hardHides: 0, staticChecked: 0, staticHits: 0 };
   GV.built = true;
 }
 const _m = new T.Matrix4(), _q = new T.Quaternion(), _p = new T.Vector3(), _s = new T.Vector3(), _e = new T.Euler(), _c0 = new T.Color(), _m2 = new T.Matrix4();
@@ -635,6 +833,7 @@ function updateGV(R, S, o) {
   const ma = GV.moteP.geometry.getAttribute("color");
   GV.motes.forEach((m, k) => { const x = wrapX(m.bx + Math.sin(t * 0.4 + m.ph) * 20 - t * 6, camx, moteSpan(visW, m.d)), u = (m.y + t * 8) / 600; mp.setXYZ(k, x, -gy + 40 + 600 * (u - Math.floor(u)), -m.d); ma.setW(k, bandA(u)); });
   mp.needsUpdate = true; ma.needsUpdate = true;
+  updateGVGapGuard(R, S);
 }
 
 /* ============================================================
@@ -875,7 +1074,83 @@ function boxInGap(cam, obj, pad, near) { pad = pad || 0; let x0 = 9, x1 = -9, y0
   obj.traverse(n => { if (!n.isMesh || (n !== obj && !n.visible)) return; /* root visibility is the guard's output, not an input */ const b = localBox(n.geometry); any = true;
     for (let i = 0; i < 8; i++) { GG.v.set(b[i & 1 ? 3 : 0], b[i & 2 ? 4 : 1], b[i & 4 ? 5 : 2]).applyMatrix4(n.matrixWorld).project(cam); x0 = Math.min(x0, GG.v.x); x1 = Math.max(x1, GG.v.x); y0 = Math.min(y0, GG.v.y); y1 = Math.max(y1, GG.v.y); } });
   if (!any) return false; if (near) return ndcHit(x0 - pad, x1 + pad, y0 - pad * 0.5, y1 + pad * 0.5, true); GG.stats.checks++; const h = ndcHit(x0 - pad, x1 + pad, y0 - pad * 0.5, y1 + pad * 0.5); if (h) GG.stats.hits++; return h; }
-function gapAudit() { const R = window.Render3D && Render3D._R, E = KIT.cur; if (!R || !E) return null; const S = R.lastView, cam = R.bgCam; if (!S) return null; // B-11: audit reads the last render view, not the live S cam.updateMatrixWorld();
+function updateGVGapGuard(R, S) {
+  if (!GV.built || !GV.guardMeshes || !GV.guardMeshes.length || !R.bgCam || !R.fgCam) return;
+  gapRects(R, S); R.bgCam.updateMatrixWorld(true); GV.group.updateMatrixWorld(true);
+  const t = S.time || 0, dt = Math.min(0.1, Math.max(0, t - (GV.guardTime == null ? t : GV.guardTime))); GV.guardTime = t;
+  const fade = (cur, target) => cur + (target - cur) * Math.min(target < cur ? 0.45 : 0.12, dt * (target < cur ? 14 : 5));
+  const local = new T.Matrix4(), world = new T.Matrix4(), pos = new T.Vector3(), rot = new T.Quaternion(), scale = new T.Vector3();
+  let checked = 0, hits = 0, hardHides = 0;
+  for (const mesh of GV.guardMeshes) {
+    const gains = mesh.userData.gvGapFade || (mesh.userData.gvGapFade = []);
+    for (let i = 0; i < mesh.count; i++) {
+      mesh.getMatrixAt(i, local); world.copy(mesh.matrixWorld).multiply(local); world.decompose(pos, rot, scale);
+      const rad = Math.max(2, Math.max(scale.x, scale.y, scale.z) * 0.72);
+      const hard = inGap(R.bgCam, pos.x, pos.y, pos.z, rad, false);
+      const soon = inGap(R.bgCam, pos.x, pos.y, pos.z, rad, true);
+      let gain = gains[i] == null ? 1 : gains[i];
+      if (hard) { if (gain > 0.02) hardHides++; gain = 0; hits++; }
+      else gain = fade(gain, soon ? 0 : 1);
+      gains[i] = gain; checked++;
+      if (gain < 0.999) { local.decompose(pos, rot, scale); scale.multiplyScalar(Math.max(0.0001, gain)); local.compose(pos, rot, scale); mesh.setMatrixAt(i, local); }
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+  }
+  // B-13: waterfall cliff, stream, pool and reeds are fixed meshes. Fade each independently in the same screen-space gap guard.
+  let staticChecked = 0, staticHits = 0;
+  if (GV.guardStatic && GV.guardStatic.length) {
+    GV.group.updateMatrixWorld(true);
+    GV.guardStatic.forEach((obj, i) => {
+      const hard = boxInGap(R.bgCam, obj, 0.025, false), soon = boxInGap(R.bgCam, obj, 0.025, true);
+      let gain = GV.guardStaticGains[i] == null ? 1 : GV.guardStaticGains[i];
+      if (hard) { gain = 0; staticHits++; } else gain = fade(gain, soon ? 0 : 1);
+      GV.guardStaticGains[i] = gain; staticChecked++;
+      obj.visible = gain > 0.005;
+      obj.traverse(n => { if (!n.isMesh || !n.material) return;
+        const mats = Array.isArray(n.material) ? n.material : [n.material];
+        for (const mat of mats) {
+          if (mat.userData.gvGapBaseOpacity == null) { mat.userData.gvGapBaseOpacity = mat.opacity == null ? 1 : mat.opacity; mat.userData.gvGapBaseTransparent = !!mat.transparent; }
+          const baseOpacity = mat.userData.gvGapBaseOpacity, transparent = mat.userData.gvGapBaseTransparent || gain < 0.999;
+          if (mat.transparent !== transparent) { mat.transparent = transparent; mat.needsUpdate = true; }
+          mat.opacity = baseOpacity * gain;
+        }
+      });
+    });
+  }
+  // Foreground pollen motes are Points rather than InstancedMesh; apply the same gap fade per point.
+  let moteChecked = 0, moteHits = 0;
+  if (GV.moteP && GV.motes) {
+    const mp = GV.moteP.geometry.getAttribute("position"), ma = GV.moteP.geometry.getAttribute("color");
+    for (let i = 0; i < mp.count; i++) {
+      const m = GV.motes[i], x = mp.getX(i), y = mp.getY(i), z = mp.getZ(i);
+      const hard = inGap(R.bgCam, x, y, z, 3, false), soon = inGap(R.bgCam, x, y, z, 3, true);
+      let gain = m.gapFade == null ? 1 : m.gapFade;
+      if (hard) { gain = 0; moteHits++; } else gain = fade(gain, soon ? 0 : 1);
+      m.gapFade = gain; ma.setW(i, ma.getW(i) * gain); moteChecked++;
+    }
+    ma.needsUpdate = true;
+  }
+  GV.guardStats = { checked, hits, hardHides, staticChecked, staticHits, moteChecked, moteHits, gaps: GG.rects.length, approachRects: GG.near.length };
+}
+function auditGVGap(R, S) {
+  if (!GV.built || !GV.guardMeshes || !S) return null;
+  gapRects(R, S); R.bgCam.updateMatrixWorld(true); GV.group.updateMatrixWorld(true);
+  const local = new T.Matrix4(), world = new T.Matrix4(), pos = new T.Vector3(), rot = new T.Quaternion(), scale = new T.Vector3();
+  let checked = 0, viol = 0; const what = [];
+  for (const mesh of GV.guardMeshes) for (let i = 0; i < mesh.count; i++) {
+    mesh.getMatrixAt(i, local); world.copy(mesh.matrixWorld).multiply(local); world.decompose(pos, rot, scale);
+    if (Math.max(scale.x, scale.y, scale.z) < 0.05) continue;
+    checked++; const rad = Math.max(2, Math.max(scale.x, scale.y, scale.z) * 0.72);
+    if (inGap(R.bgCam, pos.x, pos.y, pos.z, rad, false)) { viol++; if (what.length < 12) what.push((mesh.name || mesh.type) + ":" + i); }
+  }
+  let staticChecked = 0;
+  for (const obj of GV.guardStatic || []) if (obj.visible) { staticChecked++; if (boxInGap(R.bgCam, obj, 0.025, false)) { viol++; if (what.length < 12) what.push("static:" + (obj.name || obj.type)); } }
+  let moteChecked = 0;
+  if (GV.moteP && GV.motes) { const mp = GV.moteP.geometry.getAttribute("position"), ma = GV.moteP.geometry.getAttribute("color");
+    for (let i = 0; i < mp.count; i++) if (ma.getW(i) > 0.05) { moteChecked++; if (inGap(R.bgCam, mp.getX(i), mp.getY(i), mp.getZ(i), 3, false)) { viol++; if (what.length < 12) what.push("pollen:" + i); } } }
+  return { world: "Green Valley", checked, staticChecked, moteChecked, viol, what, guard: GV.guardStats, gaps: GG.rects.length };
+}
+function gapAudit() { const R = window.Render3D && Render3D._R; if (!R) return null; const S = R.lastView, cam = R.bgCam; if (!S) return null; if (GV.applied && GV.built && (S.worldKey === "meadow" || S.world && S.world.key === "meadow")) return auditGVGap(R, S); const E = KIT.cur; if (!E) return null; // B-11: audit reads the last render view, not the live S cam.updateMatrixWorld();
   const keep = GG.stats.checks, keepH = GG.stats.hits, simT = S.time, frT = GG.frameTime;
   // audit the frame that was actually drawn: its own gap rects (S may have advanced a step after the last draw), minus the guard margins
   GG.rects = (GG.frameRects || []).map(r => [r[0] + 0.085, r[1] - 0.035, r[2] + 0.02, r[3] - 0.02]);
@@ -977,14 +1252,265 @@ function updatePend(R, S) {
   }
   for (const e of PEN.pool) if (!e.used) e.g.visible = false;
 }
+/* ============================================================
+   B-14 · ROTORSAW in 3D (render-only; position/phase read from obstacle state)
+   The original collision and timing functions in obstacles.js remain authoritative.
+   ============================================================ */
+const BLADE = { pool: [], byObstacle: new WeakMap() };
+function radialGeometry(innerR, outerR, segments, isRing) {
+  const a = [];
+  for (let i = 0; i < segments; i++) {
+    const a0 = (i / segments) * Math.PI * 2, a1 = ((i + 1) / segments) * Math.PI * 2;
+    const x0 = Math.cos(a0), y0 = Math.sin(a0), x1 = Math.cos(a1), y1 = Math.sin(a1);
+    if (isRing) a.push(innerR*x0,innerR*y0,0, outerR*x0,outerR*y0,0, outerR*x1,outerR*y1,0,
+      innerR*x0,innerR*y0,0, outerR*x1,outerR*y1,0, innerR*x1,innerR*y1,0);
+    else a.push(0,0,0, outerR*x0,outerR*y0,0, outerR*x1,outerR*y1,0);
+  }
+  const g = new T.BufferGeometry(); g.setAttribute("position", new T.Float32BufferAttribute(a, 3)); g.computeVertexNormals(); return g;
+}
+function gearGeometry(innerR, outerR, teeth) {
+  const a = [], n = teeth * 4;
+  for (let i = 0; i < n; i++) {
+    const a0 = (i / n) * Math.PI * 2 - Math.PI / 2, a1 = ((i + 1) / n) * Math.PI * 2 - Math.PI / 2;
+    const q0 = i % 4, q1 = (i + 1) % 4, r0 = q0 === 0 || q0 === 3 ? outerR : innerR, r1 = q1 === 0 || q1 === 3 ? outerR : innerR;
+    a.push(0,0,0, Math.cos(a0)*r0,Math.sin(a0)*r0,0, Math.cos(a1)*r1,Math.sin(a1)*r1,0);
+  }
+  const g = new T.BufferGeometry(); g.setAttribute("position", new T.Float32BufferAttribute(a, 3)); g.computeVertexNormals(); return g;
+}
+function newBlade(R) {
+  const g = new T.Group(); g.name = "obstacle:blade"; R.fg.add(g);
+  const shaftBack = new T.Mesh(new T.BoxGeometry(1, 1, 1), basic(INK)); g.add(shaftBack);
+  const shaft = new T.Mesh(new T.BoxGeometry(1, 1, 1), lam("#75879A")); g.add(shaft);
+  const capTop = new T.Mesh(new T.BoxGeometry(1, 1, 1), lam("#46596B")); g.add(capTop);
+  const capBottom = new T.Mesh(new T.BoxGeometry(1, 1, 1), lam("#46596B")); g.add(capBottom);
+  const saw = new T.Group(); g.add(saw);
+  const shadow = new T.Mesh(new T.SphereGeometry(1, 24, 12), basic(INK)); shadow.scale.set(27, 27, 0.8); saw.add(shadow);
+  const face = new T.Mesh(new T.SphereGeometry(1, 24, 12), lam("#8798A9")); face.position.z = 0.5; face.scale.set(23, 23, 0.8); saw.add(face);
+  const teeth = new T.Mesh(gearGeometry(20, 27, 10), lam("#DDE5EC", { side: T.DoubleSide })); teeth.position.z = 1.4; saw.add(teeth);
+  const teethInk = new T.Mesh(gearGeometry(20, 27, 10), basic(INK, { side: T.DoubleSide })); teethInk.position.z = 1.0; teethInk.scale.setScalar(1.04); saw.add(teethInk);
+  const hub = new T.Mesh(new T.SphereGeometry(1, 20, 10), lam("#F15B55")); hub.position.z = 2.3; hub.scale.set(7.5, 7.5, 1.0); saw.add(hub);
+  const hubCore = new T.Mesh(new T.SphereGeometry(1, 16, 8), basic("#FFF4DC")); hubCore.position.z = 2.7; hubCore.scale.set(3, 3, 0.8); saw.add(hubCore);
+  const warning = new T.Mesh(radialGeometry(29, 32, 48, true), new T.MeshBasicMaterial({ color: "#FF5364", transparent: true, opacity: 0.42, depthWrite: false, side: T.DoubleSide }));
+  warning.position.z = -1; g.add(warning);
+  const e = { g, shaftBack, shaft, capTop, capBottom, saw, warning, used: false };
+  BLADE.pool.push(e); return e;
+}
+function updateBlades(R, S) {
+  const O = window.OBSTACLES && window.OBSTACLES.blade; if (!O) return;
+  for (const e of BLADE.pool) e.used = false;
+  const v = R.view;
+  for (const ob of S.pipes) {
+    if (ob.fam !== "blade") continue;
+    if (ob.x > S.W + v.offX + 140 || ob.x + ob.w < -v.offX - 140) continue;
+    let e = BLADE.byObstacle.get(ob);
+    if (!e || e.used) { e = BLADE.pool.find(q => !q.used) || newBlade(R); BLADE.byObstacle.set(ob, e); }
+    e.used = true; e.g.visible = true;
+    const cx = ob.x + ob.w / 2, cy = ob.by == null ? ob.gapY : ob.by;
+    const top = ob.gapY - ob.gap / 2, bot = ob.gapY + ob.gap / 2;
+    e.shaftBack.position.set(cx, -(top + bot) / 2, 1); e.shaftBack.scale.set(10, ob.gap + 8, 3);
+    e.shaft.position.set(cx, -(top + bot) / 2, 2); e.shaft.scale.set(5.5, ob.gap - 8, 3);
+    e.capTop.position.set(cx, -top, 3); e.capTop.scale.set(16, 8, 5);
+    e.capBottom.position.set(cx, -bot, 3); e.capBottom.scale.set(16, 8, 5);
+    // Match the visible 3D blade to the source obstacle radius and the 2D silhouette (bladeR + 4).
+    // The hit test remains authoritative in obstacles.js; this is render-only sizing.
+    const bladeScale = Math.max(0.1, ((Number.isFinite(ob.bladeR) ? ob.bladeR : 18) + 4) / 27);
+    e.saw.position.set(cx, -cy, 13); e.saw.rotation.z = ob.spin || 0; e.saw.scale.setScalar(bladeScale);
+    const pulse = 0.32 + 0.2 * (0.5 + 0.5 * Math.sin((S.time || 0) * 6 + (ob.ph || 0)));
+    e.warning.position.set(cx, -cy, 10); e.warning.scale.setScalar(bladeScale); e.warning.material.opacity = pulse;
+    e.warning.visible = true;
+  }
+  for (const e of BLADE.pool) if (!e.used) e.g.visible = false;
+}
+let _blade2d = null;
+function muteBlade2D(on) { const O = window.OBSTACLES && window.OBSTACLES.blade; if (!O) return;
+  if (!_blade2d) _blade2d = O.draw;
+  O.draw = on ? function (c, ob, S) { if (!(window.__R3D && window.__R3D.active) || !STUDIO.installed) return _blade2d.call(this, c, ob, S); } : _blade2d; }
+
 let _pend2d = null;
 function mutePendulum2D(on) { const O = window.OBSTACLES && window.OBSTACLES.pendulum; if (!O) return;
   if (!_pend2d) _pend2d = O.draw;
   O.draw = on ? function (c, ob, S) { if (!(window.__R3D && window.__R3D.active) || !STUDIO.installed) return _pend2d.call(this, c, ob, S); } : _pend2d; }
 
 /* ============================================================
+   B-14 · LASER BARRIER in 3D (render-only; phase from OBSTACLES.laser.phase)
+   Existing warning durations and collision checks remain in obstacles.js.
+   ============================================================ */
+const LASER = { pool: [], byObstacle: new WeakMap() };
+function triangleGeometry(r) {
+  const a = [0,r,0, -r,-r,0, r,-r,0];
+  const g = new T.BufferGeometry(); g.setAttribute("position", new T.Float32BufferAttribute(a, 3)); g.computeVertexNormals(); return g;
+}
+function newLaser(R) {
+  const g = new T.Group(); g.name = "obstacle:laser"; R.fg.add(g);
+  const housings = [], lenses = [];
+  for (let i = 0; i < 4; i++) {
+    const h = new T.Mesh(new T.BoxGeometry(1,1,1), lam("#596B7A")); g.add(h); housings.push(h);
+    const l = new T.Mesh(new T.SphereGeometry(1, 12, 8), new T.MeshBasicMaterial({ color: "#7A8A9A" })); g.add(l); lenses.push(l);
+  }
+  const glow = new T.Mesh(new T.BoxGeometry(1,1,1), new T.MeshBasicMaterial({ color:"#FF404F", transparent:true, opacity:0.18, depthWrite:false })); glow.name="laser:glow"; g.add(glow);
+  const beam = new T.Mesh(new T.BoxGeometry(1,1,1), new T.MeshBasicMaterial({ color:"#FF3B5C", transparent:true, opacity:0.95, depthWrite:false })); beam.name="laser:beam"; g.add(beam);
+  const core = new T.Mesh(new T.BoxGeometry(1,1,1), new T.MeshBasicMaterial({ color:"#FFF4DC", transparent:true, opacity:0.78, depthWrite:false })); g.add(core);
+  const warning = new T.Mesh(triangleGeometry(9), new T.MeshBasicMaterial({ color:"#FFB830", side:T.DoubleSide })); warning.name="laser:warning"; g.add(warning);
+  const warningBar = new T.Mesh(new T.BoxGeometry(1,1,1), basic(INK)); g.add(warningBar);
+  const warningDot = new T.Mesh(new T.SphereGeometry(1, 10, 8), basic(INK)); g.add(warningDot);
+  const dots = [];
+  for (let i = 0; i < 7; i++) { const d = new T.Mesh(new T.SphereGeometry(1, 8, 6), basic("#FF7777")); g.add(d); dots.push(d); }
+  const e = { g, housings, lenses, glow, beam, core, warning, warningBar, warningDot, dots, used:false };
+  LASER.pool.push(e); return e;
+}
+function updateLasers(R, S) {
+  const O = window.OBSTACLES && window.OBSTACLES.laser; if (!O) return;
+  for (const e of LASER.pool) e.used = false;
+  const v = R.view;
+  for (const ob of S.pipes) {
+    if (ob.fam !== "laser") continue;
+    if (ob.x > S.W + v.offX + 140 || ob.x + ob.w < -v.offX - 140) continue;
+    let e = LASER.byObstacle.get(ob);
+    if (!e || e.used) { e = LASER.pool.find(q => !q.used) || newLaser(R); LASER.byObstacle.set(ob, e); }
+    e.used = true; e.g.visible = true;
+    const x0 = ob.x, x1 = ob.x + ob.w, top = ob.gapY - ob.gap/2, bot = ob.gapY + ob.gap/2;
+    const lensPos = [[x0-1,top-15],[x1+1,top-15],[x0-1,bot+15],[x1+1,bot+15]];
+    for (let i = 0; i < 4; i++) {
+      const [x,y] = lensPos[i], h=e.housings[i], l=e.lenses[i];
+      h.position.set(x,-y,14); h.scale.set(14,30,9);
+      l.position.set(x,-y,19); l.scale.set(5.2,5.2,2.8);
+    }
+    const ph = O.phase(ob), cx=(x0+x1)/2, cy=-ob.beamOff;
+    e.glow.position.set(cx,cy,15); e.beam.position.set(cx,cy,18); e.core.position.set(cx,cy,20);
+    e.glow.scale.set(ob.w,24,2); e.beam.scale.set(ob.w,ph === "on" ? 7 : 4,2); e.core.scale.set(ob.w,1.4,1.2);
+    const warnBlink = Math.sin((S.time || 0) * 18) > 0;
+    e.glow.visible = ph !== "off"; e.beam.visible = ph !== "off"; e.core.visible = ph === "on";
+    e.warning.visible = ph === "warn"; e.warning.position.set(cx, cy + 19, 21); e.warning.scale.setScalar(warnBlink ? 1 : 0.78);
+    e.warningBar.visible = ph === "warn"; e.warningBar.position.set(cx,cy+18,22); e.warningBar.scale.set(2,7,1);
+    e.warningDot.visible = ph === "warn"; e.warningDot.position.set(cx,cy+9,22); e.warningDot.scale.setScalar(1.4);
+    e.glow.material.opacity = ph === "warn" ? (warnBlink ? 0.32 : 0.1) : 0.2;
+    e.beam.material.color.set(ph === "warn" ? "#FFB830" : "#FF3B5C");
+    e.glow.material.color.set(ph === "warn" ? "#FFB830" : "#FF404F");
+    e.lenses.forEach(l => l.material.color.set(ph === "on" ? "#FF3B5C" : ph === "warn" ? "#FFB830" : "#7A8A9A"));
+    for (let i=0;i<e.dots.length;i++) {
+      const d=e.dots[i]; d.visible = ph === "off"; d.position.set(x0 + 8 + i * ((ob.w - 16) / 6), cy, 18); d.scale.setScalar(1.8);
+    }
+  }
+  for (const e of LASER.pool) if (!e.used) e.g.visible = false;
+}
+let _laser2d = null;
+function muteLaser2D(on) { const O = window.OBSTACLES && window.OBSTACLES.laser; if (!O) return;
+  if (!_laser2d) _laser2d = O.draw;
+  O.draw = on ? function (c, ob, S) { if (!(window.__R3D && window.__R3D.active) || !STUDIO.installed) return _laser2d.call(this, c, ob, S); } : _laser2d; }
+
+/* ============================================================
+   B-14 · FALLING ROCK in 3D (render-only; rockRect/state from OBSTACLES.rock)
+   Warning timing, fall trajectory and collisions remain in the original simulation.
+   ============================================================ */
+const ROCK = { pool: [], byObstacle: new WeakMap() };
+function newRock(R) {
+  const g = new T.Group(); g.name = "obstacle:rock"; R.fg.add(g);
+  const hull = new T.Mesh(new T.IcosahedronGeometry(1,0), basic(INK, { side:T.BackSide })); g.add(hull);
+  const stone = new T.Mesh(new T.IcosahedronGeometry(1,0), new T.MeshLambertMaterial({ color:"#A99A86", flatShading:true, transparent:true })); g.add(stone);
+  const facets = [];
+  for (let i=0;i<3;i++) { const f=new T.Mesh(new T.IcosahedronGeometry(1,0), new T.MeshLambertMaterial({ color:i===0?"#C7B69E":i===1?"#7B746A":"#D9C9AD", flatShading:true, transparent:true })); g.add(f); facets.push(f); }
+  const column = new T.Mesh(new T.BoxGeometry(1,1,1), basic("#FFCF3F", { transparent:true, opacity:0.42, depthWrite:false })); g.add(column);
+  const arrows=[];
+  for(let i=0;i<4;i++){const a=new T.Mesh(new T.ConeGeometry(1,1,3),basic("#FFCF3F",{transparent:true,opacity:0.8}));g.add(a);arrows.push(a);}
+  const warn = new T.Mesh(triangleGeometry(12), basic("#FFCF3F", { side:T.DoubleSide })); g.add(warn);
+  const warnBar = new T.Mesh(new T.BoxGeometry(1,1,1), basic(INK)); g.add(warnBar);
+  const warnDot = new T.Mesh(new T.SphereGeometry(1,8,6), basic(INK)); g.add(warnDot);
+  const dust=[];
+  for(let i=0;i<3;i++){const d=new T.Mesh(new T.SphereGeometry(1,10,6),new T.MeshLambertMaterial({color:"#C6B39A",transparent:true,depthWrite:false}));g.add(d);dust.push(d);}
+  const e={g,hull,stone,facets,column,arrows,warn,warnBar,warnDot,dust,used:false};ROCK.pool.push(e);return e;
+}
+function updateRocks(R,S){
+  const O=window.OBSTACLES&&window.OBSTACLES.rock;if(!O)return;
+  for(const e of ROCK.pool)e.used=false;
+  const v=R.view, gy=S.H-S.groundH;
+  for(const ob of S.pipes){
+    if(ob.fam!=="rock")continue;
+    if(ob.x>S.W+v.offX+140||ob.x+ob.w< -v.offX-140)continue;
+    let e=ROCK.byObstacle.get(ob);if(!e||e.used){e=ROCK.pool.find(q=>!q.used)||newRock(R);ROCK.byObstacle.set(ob,e);}e.used=true;e.g.visible=ob.state!=="gone";
+    if(!e.g.visible)continue;
+    const rr=O.rockRect(ob),cx=rr.x+rr.w/2,cy=rr.y+rr.h/2;
+    const warn=ob.state==="warn"&&!!ob.warnOn, falling=ob.state==="fall", resting=ob.state==="rest";
+    const ghostY=ob.gapY-ob.gap/2-ob.rockH-6, drawY=warn?ghostY:rr.y;
+    const alpha=warn?0.48:resting?Math.max(0,1-(ob.tRest||0)/0.45):1;
+    e.stone.position.set(cx,-(drawY+rr.h/2),17);e.stone.scale.set(rr.w/2,rr.h/2,rr.w*0.34);e.stone.material.opacity=alpha;
+    e.hull.position.copy(e.stone.position);e.hull.scale.copy(e.stone.scale).multiplyScalar(1.12);e.hull.visible=alpha>0.02;
+    for(let i=0;i<e.facets.length;i++){
+      const f=e.facets[i],ang=[-0.7,1.8,2.8][i],sc=[0.24,0.18,0.14][i];
+      f.position.set(cx+Math.cos(ang)*rr.w*0.22,-(drawY+rr.h*0.5+Math.sin(ang)*rr.h*0.2),18.4+i*0.1);
+      f.scale.set(rr.w*sc,rr.h*sc,rr.w*0.08);f.rotation.z=ang;f.material.opacity=alpha*0.86;
+    }
+    e.column.visible=warn;e.column.position.set(cx,-(ob.gapY+ob.gap/2)/2,10);e.column.scale.set(3,Math.max(0,ob.gapY+ob.gap/2),1);
+    const drop=(S.time||0)*90%44;
+    for(let i=0;i<e.arrows.length;i++){const a=e.arrows[i];a.visible=warn;a.position.set(cx,-(42+drop+i*44),12);a.scale.set(7,10,1);a.rotation.z=Math.PI;}
+    const blink=Math.sin((S.time||0)*14)>0;
+    e.warn.visible=warn;e.warn.position.set(cx,-Math.max(30,ghostY-28),20);e.warn.scale.setScalar(blink?1:0.65);
+    e.warnBar.visible=warn;e.warnBar.position.set(cx,-Math.max(30,ghostY-29)+1,21);e.warnBar.scale.set(2,9,1);
+    e.warnDot.visible=warn;e.warnDot.position.set(cx,-Math.max(30,ghostY-22),21);e.warnDot.scale.setScalar(1.5);
+    const landed=resting&&(ob.tRest||0)<0.25;
+    for(let i=0;i<e.dust.length;i++){const d=e.dust[i];d.visible=landed;d.position.set(cx+(i-1)*18,-(rr.y+rr.h+3),13+i);d.scale.set(10+i*2,4+i,1);d.material.opacity=0.6*(1-(ob.tRest||0)/0.25);}
+  }
+  for(const e of ROCK.pool)if(!e.used)e.g.visible=false;
+}
+let _rock2d=null;
+function muteRock2D(on){const O=window.OBSTACLES&&window.OBSTACLES.rock;if(!O)return;if(!_rock2d)_rock2d=O.draw;
+  O.draw=on?function(c,ob,S){if(!(window.__R3D&&window.__R3D.active)||!STUDIO.installed)return _rock2d.call(this,c,ob,S);}:_rock2d;}
+
+/* ============================================================
    install: wrap the render3d.js step table
    ============================================================ */
+/* ============================================================
+   B-14 · WIND TUNNEL in 3D (render-only; reads dir/time, never accel)
+   Wind force remains in the shared simulation; this only replaces the 2D artwork.
+   ============================================================ */
+const WIND = { pool: [], byObstacle: new WeakMap() };
+function newWindArrow(color) {
+  const g=new T.Group();
+  const back=new T.Mesh(new T.BoxGeometry(1,1,1),basic(INK));g.add(back);
+  const shaft=new T.Mesh(new T.BoxGeometry(1,1,1),new T.MeshBasicMaterial({color}));g.add(shaft);
+  const headBack=new T.Mesh(triangleGeometry(6.6),basic(INK,{side:T.DoubleSide}));g.add(headBack);
+  const head=new T.Mesh(triangleGeometry(5),new T.MeshBasicMaterial({color,side:T.DoubleSide}));g.add(head);
+  return {g,back,shaft,headBack,head};
+}
+function pennantGeometry() {
+  const g=new T.BufferGeometry();
+  g.setAttribute("position",new T.Float32BufferAttribute([0,0,0,12,2,0,19,7,0,11,12,0],3));
+  g.setIndex([0,1,2,0,2,3]);g.computeVertexNormals();return g;
+}
+function newWind(R) {
+  const g=new T.Group();g.name="obstacle:wind";R.fg.add(g);const posts=[];
+  for(let i=0;i<2;i++){const h=new T.Mesh(new T.BoxGeometry(1,1,1),lam("#7E91A4"));g.add(h);const outline=new T.Mesh(new T.BoxGeometry(1,1,1),basic(INK));g.add(outline);posts.push({h,outline});}
+  const flags=[];
+  for(let i=0;i<2;i++){const pole=new T.Mesh(new T.BoxGeometry(1,1,1),lam("#3D4C5C"));g.add(pole);const cloth=new T.Mesh(pennantGeometry(),lam("#3FA9E0",{side:T.DoubleSide}));g.add(cloth);flags.push({pole,cloth});}
+  const arrows=[];for(let i=0;i<5;i++){const a=newWindArrow("#3FA9E0");g.add(a.g);arrows.push(a);}
+  const e={g,posts,flags,arrows,used:false};WIND.pool.push(e);return e;
+}
+function updateWinds(R,S){
+  for(const e of WIND.pool)e.used=false;const v=R.view,gy=S.H-S.groundH;
+  for(const ob of S.pipes){
+    if(ob.fam!=="wind")continue;if(ob.x>S.W+v.offX+140||ob.x+ob.w< -v.offX-140)continue;
+    let e=WIND.byObstacle.get(ob);if(!e||e.used){e=WIND.pool.find(q=>!q.used)||newWind(R);WIND.byObstacle.set(ob,e);}e.used=true;e.g.visible=true;
+    const xs=[ob.x-1,ob.x+ob.w-1],dir=ob.dir<0?-1:1;
+    for(let i=0;i<2;i++){const x=xs[i],p=e.posts[i];p.h.position.set(x,-(40+gy)/2,7);p.h.scale.set(10,gy-40,8);p.outline.position.copy(p.h.position);p.outline.scale.set(12,gy-38,9);}
+    // Match obstacles.js: the rules palette is a full visual mode, not only an arrow tint.
+    const color = window.WIND_RULES_ON === true
+      ? (dir < 0 ? "#3FD9A8" : "#F2A33A")
+      : (dir < 0 ? "#3FA9E0" : "#EF7D23");
+    for(let i=0;i<2;i++){const f=e.flags[i],fx=xs[i]+1,wave=Math.sin((S.time||0)*9+(ob.ph||0)+fx)*0.14;
+      f.pole.position.set(fx,-58,11);f.pole.scale.set(2.6,14,2.5);f.cloth.position.set(fx,-52,12);f.cloth.rotation.z=dir<0?Math.PI/2+wave:-Math.PI/2-wave;
+      f.cloth.material.color.set(color);}
+    for(let i=0;i<5;i++){const a=e.arrows[i],x=ob.x+12+(i/4)*(ob.w-24),flow=(((S.time||0)*(140+i*22)+(ob.ph||0)*60)%(gy-80)),y=dir<0?gy-40-flow:60+flow;
+      a.g.visible=true;a.g.position.set(x,-y,16);a.g.rotation.z=dir<0?0:Math.PI;
+      a.back.position.set(0,-6,-0.6);a.back.scale.set(6.4,27,1.2);
+      a.shaft.position.set(0,-6,0);a.shaft.scale.set(3,24,1.5);
+      a.head.position.set(0,8,0.5);a.headBack.position.set(0,8,-0.1);a.headBack.scale.setScalar(1.24);
+      a.shaft.material.color.set(color);a.head.material.color.set(color);}
+  }
+  for(const e of WIND.pool)if(!e.used)e.g.visible=false;
+}
+let _wind2d=null;
+function muteWind2D(on){const O=window.OBSTACLES&&window.OBSTACLES.wind;if(!O)return;if(!_wind2d)_wind2d=O.draw;
+  O.draw=on?function(c,ob,S){if(!(window.__R3D&&window.__R3D.active)||!STUDIO.installed)return _wind2d.call(this,c,ob,S);}:_wind2d;}
+
 function install(API) {
   const R = API._R, H = API._H; STUDIO.api = API;
   const orig = Object.assign({}, H);
@@ -1037,10 +1563,10 @@ function install(API) {
     else { R.bg.fog.near = 900; R.bg.fog.far = 11000; W.sunL.position.copy(GV.sunPos0); W.sunL.intensity = GV.sunInt0; }
   };
   H.updateWorld = function (S, o) { orig.updateWorld(S, o); if (GV.applied && GV.built) updateGV(R, S, o); else if (KIT.cur) updateKit(R, S, o, KIT.cur); };
-  H.after = function (S, o) { updatePend(R, S); };
-  mutePendulum2D(true);
+  H.after = function (S, o) { updatePend(R, S); updateBlades(R, S); updateLasers(R, S); updateRocks(R, S); updateWinds(R, S); };
+  mutePendulum2D(true); muteBlade2D(true); muteLaser2D(true); muteRock2D(true); muteWind2D(true);
   // restore the 2D painter if the 3D path falls back
-  const d0 = API.dispose; API.dispose = function () { mutePendulum2D(false); return d0.apply(this, arguments); };
+  const d0 = API.dispose; API.dispose = function () { mutePendulum2D(false); muteBlade2D(false); muteLaser2D(false); muteRock2D(false); muteWind2D(false); return d0.apply(this, arguments); };
   STUDIO.installed = true;
 }
 /* r2.2 bird mesh budget (≤ 12 meshes incl. ink hulls, any gear): bake equipment into the body / wing / tail meshes.
@@ -1061,9 +1587,9 @@ function bakeBird(b) {
   const W = [b.parts.wingL, b.parts.wingR], tailG = b.parts.tail, scT = b.root.getObjectByName("scarfTails");
   const spinning = n => { let p = n; while (p) { if (p.name === "item:propeller") return true; p = p.parent; } return false; };
   const host = o => { const g = o.children.find(c => c.isGroup && c.children.some(m => m.isMesh && !m.userData.hull)) || o; const m = g.children.find(c => c.isMesh && !c.userData.hull), h = g.children.find(c => c.userData.hull); return { g, m, h }; };
-  for (const w of W) { const wg = w.children[0]; into(host(wg), n => under(n, w)); }
+  if (!b.fw) for (const w of W) { const wg = w.children[0]; into(host(wg), n => under(n, w)); } // B-12b feather wing: wing items stay on their forearm socket (not baked)
   into(host(tailG), n => under(n, tailG));
-  const bodyHost = b.parts.body; into(bodyHost, n => !W.some(w => under(n, w)) && !under(n, tailG) && !(scT && under(n, scT)) && !spinning(n) && !b.parts.eyes.some(e => under(n, e)));
+  const bodyHost = b.parts.body; into(bodyHost, n => !(b.fw && under(n, b.fw.group)) && !W.some(w => under(n, w)) && !under(n, tailG) && !(scT && under(n, scT)) && !spinning(n) && !b.parts.eyes.some(e => under(n, e)));
   const pr = b.root.getObjectByName("item:propeller"); if (pr) pr.children.filter(c => c.userData.hull).forEach(h => pr.remove(h)); // spinning prop: no ink hull (keeps any preset ≤ 12 meshes)
   b.hulls = collectHulls(b.root);
 }
@@ -1089,6 +1615,6 @@ function pendBounds() {
 }
 function itemBounds() { const b = STUDIO.bird; return b ? (b.preBake || []) : []; } // extents recorded just before baking (rest pose)
 
-const STUDIO = window.R3D_STUDIO = { VERSION, CFG, PLANS, ITEMS, GEAR_PRESETS, install, makeSwift, equipItem, buildScarf: buildScarfInto, poseSwift, triCount, meshCount, FLIGHT_BASE, FLIGHT_BIRD, flightParams, strokeAt,
+const STUDIO = window.R3D_STUDIO = { VERSION, CFG, PLANS, ITEMS, GEAR_PRESETS, install, makeSwift, equipItem, buildScarf: buildScarfInto, poseSwift, triCount, meshCount, FLIGHT_BASE, FLIGHT_BIRD, flightParams, strokeAt, FW_PLANS, FW_P, buildFeatherWings, poseFeather, poseScarfTails, fwTable,
   pendBounds, itemBounds, GV, PEN, KIT, KITS, GG, gapAudit, wingOutline, active: true };
 })();

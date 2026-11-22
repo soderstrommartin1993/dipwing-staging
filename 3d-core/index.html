@@ -133,6 +133,7 @@
   .btn:focus-visible{outline:3px solid #2e9e5b;outline-offset:2px;}
   .btnrow{display:flex;gap:10px;width:100%;}
   .btnrow .btn{flex:1;}
+  #continueChoices .btn{min-height:44px !important;}
   .pill{
     display:inline-flex;align-items:center;gap:6px;
     background:#2b2118;color:#ffe9b8;font-size:12.5px;font-weight:800;
@@ -385,6 +386,41 @@
   #birdsBalRow{display:flex;align-items:center;justify-content:center;gap:8px;margin-top:6px;}
   #birdsBal{background:#0f3b34;color:#8df2dc;font-size:17px;font-weight:900;padding:6px 16px;border-radius:999px;border:2px solid #2b2118;}
   #birdsNote{font-size:14px;font-weight:900;color:#0f6a5c;margin-top:6px;}
+  /* Shop 1.0: mobile-first, tap targets >=44px. */
+  #closetTabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px;}
+  #closetTabs .ctab{max-width:none;min-height:46px;font-size:11px;white-space:normal;line-height:1.1;padding:6px 1px;letter-spacing:-.2px;overflow-wrap:normal;}
+  #birdsGrid.shop-grid{display:grid;grid-template-columns:1fr;gap:9px;max-height:34vh;}
+  .shop-card{min-height:108px;position:relative;overflow:hidden;}
+  .shop-card .bird-art{width:70px;height:68px;}
+  .shop-card .bird-go{margin-top:5px;}
+  .shop-card .shop-price{min-height:44px;padding:9px 12px;font-size:13px;}
+  .shop-rarity{display:flex;align-items:center;gap:5px;font-size:10px;font-weight:1000;text-transform:uppercase;letter-spacing:.04em;margin-top:3px;}
+  .shop-rarity .pip{letter-spacing:1px;font-size:9px;}
+  .shop-card.rarity-common{border-color:#9a886c;}
+  .shop-card.rarity-uncommon{border-color:#348c69;}
+  .shop-card.rarity-rare{border-color:#4679bd;}
+  .shop-card.rarity-epic{border-color:#8d62c6;}
+  .shop-card.rarity-mythic{border-color:#bb6c39;}
+  .shop-card.rarity-legendary{border:3px double #d3a62a;}
+  .shop-daily{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin:8px 0 4px;}
+  .shop-daily > .tiny{grid-column:1 / -1;}
+  .shop-shelf-item{min-width:0;min-height:58px;border:2px solid #26315c;border-radius:12px;padding:5px;background:#fff7e7;color:#1b1f3b;font:800 11px "Nunito",system-ui;overflow:hidden;}
+  .shop-shelf-item b,.shop-shelf-item small{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .shop-shelf-item small{white-space:normal;overflow:visible;text-overflow:clip;line-height:1.15;}
+  .shop-shelf-item .discount{color:#b34d2a;font-weight:1000;}
+  .shop-preview{display:grid;grid-template-columns:1fr 58px 1.5fr;align-items:center;gap:8px;padding:7px 10px;margin:5px 0;background:#f3ebdb;border:2px solid #1b1f3b;border-radius:14px;min-height:72px;}
+  .shop-preview-heading{font-size:11px;font-weight:1000;text-transform:uppercase;letter-spacing:.05em;}
+  .shop-preview-art{width:58px;height:54px;display:grid;place-items:center;font-size:30px;animation:shopFloat 2.4s ease-in-out infinite;}
+  .shop-preview small{display:block;color:#5b4c3a;font-size:11px;}
+  @keyframes shopFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-4px)}}
+  @media (prefers-reduced-motion:reduce){.shop-preview-art{animation:none !important;}}
+  .shop-confirm{margin:6px 0;padding:10px;border:2px solid #1b1f3b;border-radius:13px;background:#fff4d8;font-weight:900;}
+  .shop-confirm-actions{display:flex;gap:8px;margin-top:8px;}
+  #shopConfirm .shop-confirm-actions button{flex:1;min-height:46px;}
+  .shop-last-purchase{margin:5px 0;padding:6px;text-align:center;}
+  #shopLastPurchase.shop-last-purchase button{min-height:44px;}
+  #menuOv .card,#profileOv .card{border-color:var(--shop-menu-accent,#1A1433);background:linear-gradient(180deg,var(--shop-menu-paper,#FFF8EC),#FFF0D6);}
+  body.reduced-motion .shop-preview-art{animation:none !important;}
 
   /* ================= Identity V1 (Dipwing) — only when body.id-v1 (IDENTITY_V1 flag) ================= */
   body.id-v1{
@@ -403,6 +439,7 @@
   body.id-v1 .btn.secondary{background:var(--cream);color:var(--ink);}
   body.id-v1 .btn:focus-visible,body.id-v1 .wbtn:focus-visible{outline:3px solid var(--tornis);outline-offset:2px;}
   body.id-v1 .wbtn{font-family:var(--font-display);font-weight:800;border-color:var(--ink);background:linear-gradient(var(--coral-top),var(--coral-bot));color:#fff;-webkit-text-stroke:3px var(--ink);paint-order:stroke fill;box-shadow:0 3px 0 var(--ink);min-height:40px;}
+  #birdsOv .wbtn[disabled],body.id-v1 #birdsOv .wbtn[disabled]{background:#d9d2c3;color:#4a4236;-webkit-text-stroke:0;box-shadow:none;cursor:not-allowed;border-style:dashed;}
   body.id-v1 .wbtn.ghost{background:var(--cream);color:var(--ink);-webkit-text-stroke:0;}
   body.id-v1 .pill{background:var(--ink);color:var(--cream);}
   body.id-v1 .neon{color:var(--coral);}
@@ -442,6 +479,95 @@
   body.id-v1 #menuCard .bestbox b{font-size:17px;}
   #workingTitle{font-size:11px;opacity:.75;margin-top:6px;}
   body.id-v1 #workingTitle{color:var(--ink);}
+
+  /* ================= B-15: 3D menu + HUD presentation =================
+     Applied only after the Three.js renderer reports active. All depth is CSS/presentation-only;
+     controls, hitboxes, score, timing and simulation remain the existing 2D DOM/input systems. */
+  body.r3d-ui #stage{touch-action:none;}
+  body.r3d-ui #gameCanvas{touch-action:none;pointer-events:auto;}
+  body.r3d-ui #menuOv{
+    background:linear-gradient(180deg,rgba(18,24,62,.05) 0%,rgba(18,24,62,.02) 46%,rgba(12,14,36,.30) 100%);
+  }
+  body.r3d-ui.id-v1 #menuCard .menuBottom{
+    background:linear-gradient(155deg,rgba(255,252,239,.96),rgba(255,238,207,.91));
+    border:2px solid rgba(255,255,255,.92);
+    box-shadow:0 3px 0 rgba(26,20,51,.95),0 12px 30px rgba(8,12,38,.34),
+      inset 0 1px 0 #fff,inset 0 -3px 0 rgba(59,76,192,.10);
+    backdrop-filter:blur(10px) saturate(1.15);
+    transform:perspective(900px) rotateX(.65deg);
+    transform-style:preserve-3d;
+  }
+  body.r3d-ui.id-v1 .wordmark{
+    text-shadow:0 2px 0 #1A1433,0 5px 0 #1A1433,0 9px 16px rgba(8,10,32,.45);
+    filter:drop-shadow(0 8px 12px rgba(8,10,32,.25));
+  }
+  body.r3d-ui .btn{
+    transform:translateZ(0);
+    box-shadow:0 5px 0 var(--ink,#1A1433),0 9px 16px rgba(8,10,32,.20),inset 0 1px 0 rgba(255,255,255,.82);
+    transition:transform .09s ease,box-shadow .09s ease,filter .15s ease;
+  }
+  body.r3d-ui .btn:active{
+    transform:translateY(4px) translateZ(-2px);
+    box-shadow:0 1px 0 var(--ink,#1A1433),0 3px 7px rgba(8,10,32,.20),inset 0 1px 0 rgba(255,255,255,.6);
+  }
+  body.r3d-ui #playBtn{
+    box-shadow:0 6px 0 var(--ink,#1A1433),0 12px 22px rgba(8,10,32,.30),
+      inset 0 2px 0 rgba(255,255,255,.52),inset 0 -3px 0 rgba(110,20,26,.12);
+  }
+  body.r3d-ui #hud{perspective:900px;transform-style:preserve-3d;}
+  body.r3d-ui #scoreBig{
+    transform:translateZ(12px);
+    text-shadow:0 3px 0 #1A1433,0 6px 0 rgba(26,20,51,.78),0 12px 18px rgba(4,8,28,.42);
+    filter:drop-shadow(0 4px 7px rgba(4,8,28,.20));
+  }
+  body.r3d-ui #levelPill,body.r3d-ui #featherPill,body.r3d-ui #pauseBtn{
+    border:1.5px solid rgba(255,255,255,.82);
+    box-shadow:0 3px 0 rgba(26,20,51,.82),0 7px 14px rgba(4,8,28,.28),inset 0 1px 0 rgba(255,255,255,.82);
+    backdrop-filter:blur(10px) saturate(1.2);
+    transform:translateZ(8px);
+  }
+  body.r3d-ui #levelPill{background:linear-gradient(145deg,rgba(31,39,91,.88),rgba(26,20,51,.70));}
+  body.r3d-ui #featherPill{background:linear-gradient(145deg,rgba(255,248,236,.98),rgba(230,238,255,.94));}
+  body.r3d-ui #pauseBtn{border-radius:15px;}
+  body.r3d-ui #progressWrap{
+    height:10px;border:1px solid rgba(255,255,255,.70);
+    background:linear-gradient(180deg,rgba(12,16,46,.78),rgba(35,43,122,.65));
+    box-shadow:0 3px 8px rgba(4,8,28,.30),inset 0 2px 3px rgba(0,0,0,.36);
+    transform:translateZ(6px);
+  }
+  body.r3d-ui #progressFill{box-shadow:inset 0 1px 0 rgba(255,255,255,.55),0 0 8px rgba(255,184,48,.38);}
+  body.r3d-ui #muteBtn{
+    border:1.5px solid rgba(255,255,255,.82);
+    background:linear-gradient(145deg,rgba(255,248,236,.96),rgba(216,226,255,.86));
+    color:#1A1433;box-shadow:0 3px 0 #1A1433,0 8px 18px rgba(4,8,28,.30),inset 0 1px 0 #fff;
+    backdrop-filter:blur(10px);touch-action:manipulation;
+    /* 4c: in the 3D UI the mute control sits top-right under the pause/settings corner (safe-area aware),
+       so it never covers the menu's brand/legal row. 44x44 hit area kept. 2D layout unchanged. */
+    top:calc(70px + env(safe-area-inset-top,0px));bottom:auto;right:calc(12px + env(safe-area-inset-right,0px));
+    width:44px;height:44px;
+  }
+  body.r3d-ui #tutorial .tap{
+    background:radial-gradient(circle at 32% 24%,#fff 0%,#fff8ec 48%,#dce5ff 100%);
+    box-shadow:0 4px 0 #1A1433,0 12px 24px rgba(4,8,28,.35),inset 0 2px 0 #fff;
+    transform:translateZ(10px);
+  }
+  body.r3d-ui #tutorial p{
+    background:linear-gradient(145deg,rgba(26,20,51,.88),rgba(35,43,122,.78));
+    border:1px solid rgba(255,255,255,.55);box-shadow:0 6px 16px rgba(4,8,28,.25),inset 0 1px 0 rgba(255,255,255,.18);
+    backdrop-filter:blur(8px);
+  }
+  body.r3d-ui .overlay:not(#menuOv) .card{
+    box-shadow:0 5px 0 rgba(26,20,51,.85),0 18px 42px rgba(4,8,28,.42),inset 0 2px 0 #fff;
+    transform:perspective(1200px) rotateX(.35deg);
+  }
+  @media (max-width:420px){
+    body.r3d-ui #featherPill{top:calc(76px + env(safe-area-inset-top));}
+    body.r3d-ui #scoreBig{font-size:58px;}
+    body.r3d-ui #pauseBtn{width:46px;height:46px;}
+  }
+  @media (prefers-reduced-motion:reduce){
+    body.r3d-ui .btn,body.r3d-ui .overlay .card{transform:none !important;transition:none !important;}
+  }
 </style>
 </head>
 <body>
@@ -452,7 +578,7 @@
     <div id="scoreBig">0</div>
     <div id="levelPill">NIVÅ 1</div>
     <div id="progressWrap"><div id="progressFill"></div></div>
-    <div id="featherPill" title="Fjädrar" data-i18n-title="hud_feathers_title">🪶 0</div>
+    <div id="featherPill" title="Coins" data-i18n-title="hud_coins_title">🪙 0 C</div>
     <button id="pauseBtn" title="Paus" data-i18n-title="pause_btn_title" data-i18n-aria="pause_btn_title" aria-label="Paus">II</button>
   </div>
 
@@ -465,7 +591,8 @@
   <div class="overlay" id="menuOv">
     <div class="card" id="menuCard">
       <div class="menuTop">
-        <div class="chip" id="menuFeatherChip" title="Feathers" data-i18n-title="hud_feathers_title"><span aria-hidden="true">🪶</span><b id="menuFeathers">0</b></div>
+        <div class="chip" id="menuFeatherChip" title="Coins" data-i18n-title="hud_coins_title"><span aria-hidden="true">🪙</span><b id="menuFeathers">0 C</b></div>
+        <div class="chip" id="menuPrestigeChip" title="Prestige feathers"><span aria-hidden="true">✨</span><b id="menuPrestige">0 F</b></div>
         <div class="pill" id="menuPill">Dipwing • Level 1 ready</div>
         <button class="iconbtn" id="settingsBtn" title="Settings" aria-label="Settings" data-i18n-title="settings_aria" data-i18n-aria="settings_aria">⚙️</button>
       </div>
@@ -480,7 +607,7 @@
         <button class="btn green" id="playBtn">▶ &nbsp;PLAY</button>
         <div class="btnrow tri">
           <button class="btn secondary" id="levelsBtn" data-i18n="menu_levels_short">🌍 Levels</button>
-          <button class="btn secondary" id="birdsBtn" data-i18n="birds_btn">🐦 Birds</button>
+          <button class="btn secondary" id="birdsBtn" data-i18n="shop_btn">🛍️ Shop</button>
           <button class="btn secondary" id="endlessBtn">∞ Endless</button>
         </div>
         <div class="tiny" id="endlessBestLine"></div>
@@ -578,6 +705,7 @@
       <div id="coachTip" hidden></div>
       <h1 style="font-size:28px;" id="readyTitle">Redo att flyga?</h1>
       <p class="desc" id="readyDesc">Vida öppningar och lugnt tempo. Första trycket startar!</p>
+      <p class="tiny" id="continueReadyCostNote" hidden data-i18n="continue_ready_cost_note">150 C dras när du trycker Start.</p>
       <div class="airLegend tiny" id="airLegendReady" hidden></div>
       <button class="btn green" id="readyBtn">🐤 &nbsp;STARTA</button>
       <div class="modeseg">
@@ -615,8 +743,15 @@
         <div class="scoreline"><span data-i18n="over_target">Mål för nivån</span><b id="overTarget">10</b></div>
       </div>
       <div class="tiny" id="overEarned" hidden></div>
+      <div class="tiny" id="continueBalance" role="status" aria-live="polite">Saldo: 0 C</div>
+      <div class="btnrow tri" id="continueChoices">
+        <button class="btn secondary" id="continueFilmBtn" hidden>▶ SE FILM</button>
+        <button class="btn secondary" id="continueCoinBtn">Fortsätt</button>
+        <button class="btn green" id="retryBtn" data-i18n="retry_btn">↻ &nbsp;BÖRJA OM</button>
+      </div>
+      <div class="tiny" id="continueStatus" role="status" aria-live="polite"></div>
+      <button class="btn secondary" id="doubleRunBtn" hidden>TESTLÄGE – dubbla rundans Coins</button>
       <div class="tiny" id="overTip">Tips: flaxa lite tidigare än du tror!</div>
-      <button class="btn green" id="retryBtn" data-i18n="retry_btn">↻ &nbsp;FÖRSÖK IGEN</button>
       <button class="btn secondary" id="overScoutBtn" hidden data-i18n="scout_over_btn">🔭 Spana in samma bana (träning)</button>
       <div class="btnrow">
         <button class="btn secondary" id="overMenuBtn" data-i18n="menu_btn">Meny</button>
@@ -662,6 +797,7 @@
         <div id="nextWorldArt">✨</div>
         <div id="nextWorldBody"><b id="nextWorldName">Ny värld</b><p id="nextWorldTag"></p></div>
       </div>
+      <button class="btn secondary" id="clearDoubleRunBtn" hidden>TESTLÄGE – dubbla rundans Coins</button>
       <button class="btn green big" id="nextBtn">→ &nbsp;FORTSÄTT</button>
       <button class="btn" id="overdriveBtn">🔥 ÖVERVARV</button>
       <div class="btnrow">
@@ -681,7 +817,9 @@
       <div id="dailyGrid"></div>
       <div id="dailyGot" hidden></div>
       <button class="btn green" id="dailyClaimBtn">🎁 HÄMTA</button>
+      <button class="btn secondary" id="dailyDoubleBtn" hidden>TESTLÄGE – dubbla dagsbonus</button>
       <div class="tiny" id="dailyDone" hidden></div>
+      <div id="dailyMissions" class="tiny"></div>
       <button class="btn secondary" id="dailyBackBtn" data-i18n="menu_btn" style="margin-top:10px;">Meny</button>
     </div>
   </div>
@@ -707,6 +845,7 @@
         <button class="btn secondary" id="courseDlBtn" data-i18n="course_download">Image</button>
       </div>
       <div class="tiny" id="courseStatus" role="status" aria-live="polite"></div>
+      <button class="btn secondary" id="courseDoubleRunBtn" hidden>TESTLÄGE – dubbla rundans Coins</button>
       <textarea id="courseShareText" readonly rows="4" hidden aria-label="Share text"></textarea>
       <div class="tiny" id="courseUnverified" data-i18n="course_unverified"></div>
       <div class="tiny" data-i18n="course_midnight"></div>
@@ -720,9 +859,20 @@
       <div class="worldTag">🪶</div>
       <h1 style="font-size:26px;" id="birdsTitle">🐤 Fågelsamling</h1>
       <p class="desc" style="font-size:13px;" id="birdsSub"></p>
+      <div id="shopDailyShelf" class="shop-daily" aria-label="Daily shelf"></div>
+      <div id="shopPreview" class="shop-preview" hidden>
+        <div class="shop-preview-heading" data-i18n="shop_preview">Provrum</div>
+        <div id="shopPreviewArt" class="shop-preview-art">🐦</div>
+        <div><b id="shopPreviewName"></b><small id="shopPreviewDesc"></small></div>
+      </div>
       <div id="closetTabs" role="tablist" hidden></div>
+      <div id="shopConfirm" class="shop-confirm" hidden>
+        <div id="shopConfirmText"></div>
+        <div class="shop-confirm-actions"><button class="wbtn" id="shopConfirmBtn" type="button" data-i18n="shop_confirm_buy">Bekräfta köp</button><button class="wbtn ghost" id="shopCancelBtn" type="button" data-i18n="shop_cancel">Avbryt</button></div>
+      </div>
+      <div id="shopLastPurchase" class="shop-last-purchase" hidden></div>
       <div id="birdsGrid"></div>
-      <div id="birdsBalRow"><span id="birdsBal">🪶 0</span></div>
+      <div id="birdsBalRow"><span id="birdsBal">🪙 0 C · 0 F</span></div>
       <div class="tiny" id="birdsNote" hidden></div>
       <button class="btn secondary" id="birdsBackBtn" data-i18n="menu_btn" style="margin-top:10px;">Meny</button>
     </div>

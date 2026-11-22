@@ -545,7 +545,7 @@ const OBSTACLES = {
       return { fam: "laser", x, w: 100, gapY, gap: Math.max(S.cfg.gap + 50, 210),
         passed: false, ph: R.range(0, TAU), t: R.range(0, 0.6),
         beamOff: gapY + R.range(-20, 20),
-        toff, twin_warn: 0.5, ton: 1.25 };
+        toff, twin_warn: 0.5, ton: 1.25 }; // Restored O2 baseline; 0.8 s B1 timing requires Martin’s separate approval
     },
     update(ob, dt) { ob.t += dt; },
     phase(ob) {

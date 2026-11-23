@@ -772,7 +772,7 @@ function buildGV(R) {
   GV.guardMeshes = []; G.traverse(n => { if (n.isInstancedMesh && !gvGapExempt.has(n)) GV.guardMeshes.push(n); });
   // Fixed waterfall components are not InstancedMesh; guard each component independently so the entire set-piece
   // does not disappear just because one small piece approaches an opening.
-  GV.guardStatic = [GV.wfCliff, GV.wfFall, GV.wfPool, GV.wfReeds].filter(Boolean);
+  GV.guardStatic = []; // Background landmark: waterfall must remain visible through gate openings.
   GV.guardStaticGains = GV.guardStatic.map(() => 1);
   GV.guardStats = { checked: 0, hits: 0, hardHides: 0, staticChecked: 0, staticHits: 0 };
   GV.built = true;
@@ -1152,8 +1152,8 @@ function auditGVGap(R, S) {
     checked++; const rad = Math.max(2, Math.max(scale.x, scale.y, scale.z) * 0.72);
     if (inGap(R.bgCam, pos.x, pos.y, pos.z, rad, false)) { viol++; if (what.length < 12) what.push((mesh.name || mesh.type) + ":" + i); }
   }
-  let staticChecked = 0;
-  for (const obj of GV.guardStatic || []) if (obj.visible) { staticChecked++; if (boxInGap(R.bgCam, obj, 0.025, false)) { viol++; if (what.length < 12) what.push("static:" + (obj.name || obj.type)); } }
+  // Waterfall set-piece is intentionally exempt from the gap guard (same policy as distant trees/mountains).
+  const staticChecked = 0;
   let moteChecked = 0;
   if (GV.moteP && GV.motes) { const mp = GV.moteP.geometry.getAttribute("position"), ma = GV.moteP.geometry.getAttribute("color");
     for (let i = 0; i < mp.count; i++) if (ma.getW(i) > 0.05) { moteChecked++; if (inGap(R.bgCam, mp.getX(i), mp.getY(i), mp.getZ(i), 3, false)) { viol++; if (what.length < 12) what.push("pollen:" + i); } } }

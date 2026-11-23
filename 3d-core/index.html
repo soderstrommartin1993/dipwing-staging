@@ -568,9 +568,34 @@
   @media (prefers-reduced-motion:reduce){
     body.r3d-ui .btn,body.r3d-ui .overlay .card{transform:none !important;transition:none !important;}
   }
+
+  #dipwingLoading{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;
+    background:radial-gradient(ellipse at 50% 38%,#385b74 0%,#1c3451 48%,#101b32 100%);color:#fff;
+    opacity:1;transition:opacity .22s ease;pointer-events:auto}
+  #dipwingLoading[hidden]{display:none}
+  #dipwingLoading.is-leaving{opacity:0;pointer-events:none}
+  #dipwingLoading .load-inner{display:flex;flex-direction:column;align-items:center;gap:12px;padding:24px}
+  #dipwingLoading svg{width:118px;height:92px;overflow:visible}
+  #dipwingLoading .load-brand{font:900 36px/1 "Baloo 2","Nunito",system-ui,sans-serif;letter-spacing:.4px}
+  #dipwingLoading .load-status{font:800 14px/1.2 "Nunito",system-ui,sans-serif;letter-spacing:1.5px;color:#d6e7ee}
+  @media(prefers-reduced-motion:reduce){#dipwingLoading{transition:none}#dipwingLoading svg{animation:none!important}}
 </style>
 </head>
 <body>
+<div id="dipwingLoading" role="status" aria-live="polite" data-enabled="1">
+  <div class="load-inner">
+    <svg viewBox="0 0 160 120" aria-hidden="true">
+      <path d="M18 73 C42 28 84 18 126 42 C104 43 92 54 82 72 C63 88 38 91 18 73Z" fill="#3974cf" stroke="#172d60" stroke-width="5" stroke-linejoin="round"/>
+      <path d="M46 67 C68 44 96 36 122 43 C100 52 86 66 73 86 C61 85 52 78 46 67Z" fill="#6fa9f0" stroke="#234c91" stroke-width="3"/>
+      <path d="M92 63 C109 55 128 56 145 65 C129 67 116 77 105 91 C98 84 94 74 92 63Z" fill="#ff765f" stroke="#a94342" stroke-width="3"/>
+      <path d="M117 48 L143 41 L131 58Z" fill="#f5c65d" stroke="#9b6b32" stroke-width="2"/>
+      <circle cx="105" cy="42" r="4.2" fill="#fff"/><circle cx="106" cy="42" r="2" fill="#14213d"/>
+    </svg>
+    <div class="load-brand">Dipwing</div>
+    <div class="load-status" id="dipwingLoadingText">Laddar…</div>
+  </div>
+</div>
+<script src="src/early-loader.js"></script>
 <div id="stage">
   <canvas id="gameCanvas"></canvas>
 
@@ -908,8 +933,12 @@
 <script src="src/i18n.js"></script>
 <script src="src/analytics.js"></script>
 <script src="src/audio-glide.js"></script>
+<script src="src/feature-flags.js"></script>
+<script src="src/v2final-data.js"></script>
 <script src="src/game.js"></script>
+<script src="src/star-system.js"></script>
 <script src="src/boss-data.js"></script>
+<script src="src/boss-render-registry.js"></script>
 <script src="src/boss.js"></script>
 </body>
 </html>

@@ -76,6 +76,18 @@ function levelConfig(level, opts) {
       c.twinCh = Math.min(0.20, 0.15 + 0.006 * (L - 30));
     }
   }
+  // B-20: independent v2final proposal flag. OFF by default; never aliases LATE_CURVE.
+  if (window.DipwingFlags && window.DipwingFlags.v2final && window.DipwingV2FinalData && c.level >= 11 && c.level <= 40) {
+    const v2 = window.DipwingV2FinalData.levels[String(c.level)];
+    if (v2) {
+      if (Number.isFinite(v2.gap)) c.gap = v2.gap;
+      if (Number.isFinite(v2.ramp)) c.ramp = v2.ramp;
+      if (Number.isFinite(v2.breathEvery)) c.breathEvery = v2.breathEvery;
+      if (Number.isFinite(v2.diveMax)) c.diveMax = v2.diveMax;
+      if (Number.isFinite(v2.driftMul)) c.driftMul = v2.driftMul;
+      c.v2final = true;
+    }
+  }
   return c;
 }
 function levelConfigBase(level) {
@@ -2586,15 +2598,15 @@ function renderDaily() {
   const missions = $("dailyMissions");
   if (missions) {
     const state = Econ.missionState(), defs = (window.ECON && ECON.missions) || [];
-    missions.innerHTML = "<strong>Dagsuppdrag</strong>";
+    missions.innerHTML = "<strong>" + I18N.t("daily_missions_title") + "</strong>";
     const list = document.createElement("div"); list.className = "missionList";
     for (const def of defs) {
       const st = state.day === SaveV2.utcDateStr(new Date()) ? (state.list || []).find(x => x.id === def.id) : null;
       const row = document.createElement("div"); row.className = "missionRow";
-      const label = document.createElement("span"); label.textContent = (def.titleSv || def.id) + " · " + ((st && st.prog) || 0) + "/" + def.target + " · +" + def.reward + " C";
+      const label = document.createElement("span"); label.textContent = ((I18N.lang === "en" ? (def.titleEn || def.titleSv) : (def.titleSv || def.id))) + " · " + ((st && st.prog) || 0) + "/" + def.target + " · +" + def.reward + " C";
       row.appendChild(label);
       const claim = document.createElement("button"); claim.type = "button"; claim.className = "btn secondary mini";
-      claim.textContent = st && st.paid ? "Hämtad" : "Hämta";
+      claim.textContent = I18N.t(st && st.paid ? "daily_mission_claimed" : "daily_mission_claim");
       claim.disabled = !(st && st.done && !st.paid);
       claim.onclick = () => { const r = Econ.claimMission(def.id); renderDaily(); if (r.ok) AudioFX.fanfare(); else AudioFX.click(); };
       row.appendChild(claim); list.appendChild(row);
@@ -4355,8 +4367,21 @@ function drawParticles() {
     } else if (p.kind === "feather" || p.feather) {
       ctx.save(); ctx.globalAlpha = k;
       ctx.translate(p.x, p.y); ctx.rotate(p.rot || 0);
+      const fr = Math.max(3, p.r * 1.8);
       ctx.fillStyle = "rgb(" + p.col + ")";
-      ctx.beginPath(); ctx.ellipse(0, 0, p.r, p.r * 0.45, 0, 0, TAU); ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(-fr * 0.9, 0);
+      ctx.quadraticCurveTo(-fr * 0.15, -fr * 0.62, fr, -fr * 0.08);
+      ctx.quadraticCurveTo(fr * 0.22, fr * 0.58, -fr * 0.9, 0);
+      ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = "rgba(55,65,75,0.55)"; ctx.lineWidth = Math.max(0.7, fr * 0.075);
+      ctx.beginPath(); ctx.moveTo(-fr * 0.92, 0); ctx.lineTo(fr * 0.94, -fr * 0.04); ctx.stroke();
+      ctx.lineWidth = Math.max(0.45, fr * 0.045);
+      for (let bi = 0; bi < 5; bi++) {
+        const u = 0.12 + bi * 0.15, bx = -fr * 0.9 + fr * 1.8 * u, by = -fr * 0.02 * u;
+        ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx - fr * 0.19, -fr * (0.22 + 0.12 * Math.sin(u * Math.PI))); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx - fr * 0.16, fr * (0.17 + 0.10 * Math.sin(u * Math.PI))); ctx.stroke();
+      }
       ctx.restore();
     } else if (p.kind === "conf") {
       ctx.save(); ctx.globalAlpha = Math.min(1, k * 1.5);
@@ -4942,6 +4967,18 @@ function boot() {
     Analytics.emit("save_boot", saveInfo.recovered ? { recovered: true } : { migrated: true });
   setTimeout(resize, 60);
   requestAnimationFrame(loop);
+  // Remove the inline first-paint loader only after the real menu and language are ready.
+  try {
+    const loader = document.getElementById("dipwingLoading");
+    if (loader && loader.dataset.enabled === "1") {
+      loader.classList.add("is-leaving");
+      const finish = () => { loader.hidden = true; loader.remove(); };
+      if (window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches) finish();
+      else setTimeout(finish, 230);
+    } else if (loader) {
+      loader.hidden = true; loader.remove();
+    }
+  } catch (e) {}
 }
 if (document.readyState === "complete" || document.readyState === "interactive") boot();
 else document.addEventListener("DOMContentLoaded", boot);
@@ -4958,7 +4995,7 @@ if (!window.__dipwing) window.__dipwing = Object.freeze({ prod: true, version: w
 window.DipwingBossBridge = Object.freeze({
   get S(){return S;}, get store(){return store;}, get SIMC(){return SIMC;}, get ctx(){return ctx;}, get canvas(){return canvas;},
   reducedMotion(){return reducedMotion();}, targetForLevel(n){try{return levelConfig(n===41?6:n).target;}catch(e){return 10;}},
-  launchLegacy(level,id){const n=Math.max(1,Math.floor(Number(level)||1)); if(window.DipwingBoss) window.DipwingBoss.currentMapLevelId=id||null; S.selectedLevel=n; S.levelFilterWorld=id==="w1-l6"?"meadow":Progress.worldDefForLevel(n).id; refreshMenu(); showReady(n);},
+  launchLegacy(level,id,mode){S.mode=mode==="sky"?"sky":"classic";const n=Math.max(1,Math.floor(Number(level)||1)); if(window.DipwingBoss) window.DipwingBoss.currentMapLevelId=id||null; S.selectedLevel=n; S.levelFilterWorld=id==="w1-l6"?"meadow":Progress.worldDefForLevel(n).id; refreshMenu(); showReady(n);},
   beginBoss(){setLevel(1); S.runMode="boss"; S.hardcore=true; S.continueReady=false; S.continueUsed=false; S.runContinued=false; S.overdrive=false; S.state="playing"; S.pipes=[]; S.particles=[]; S.popups=[]; S.score=0; S.ptime=0; S.time=0; S.camX=0; S.shake=0; S.shakeT=0; S.bird.x=S.W*0.32; S.bird.y=330; S.bird.vy=0; S.bird.rot=0; S.bird.wing=0; S.bird.alive=true; hideAll(); hud.hidden=true; tutorial.hidden=true; AudioFX.ensure(); AudioFX.setBossMode(true);},
   endBoss(){AudioFX.setBossMode(false); S.runMode="adventure"; S.hardcore=false; S.continueReady=false; S.continueUsed=false; S.runContinued=false; S.state="menu"; showMenu();}
 });

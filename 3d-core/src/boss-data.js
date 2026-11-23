@@ -24,8 +24,7 @@ const ALMOR = Object.freeze({
   id: "almor", name: "Ålmor", epithet: "Tidvattenväktaren", worldId: "w1",
   intro: "En vänlig lagunål som vakar över sjön och vattenfallet.",
   body: Object.freeze({ style: "segmented-lagoon-eel", collision: false, plane: "depth" }),
-  rules: Object.freeze({ phases: 3, phaseBreak: 1.8, checkpoint: "current-phase", mercyAfterDeaths: 3,
-    mercyWarningMultiplier: 1.25, mercyRemoveEvery: 3, continueAllowed: false,
+  rules: Object.freeze({ phases: 3, phaseBreak: 1.8, checkpoint: "current-phase", continueAllowed: false,
     warningMin: 1.0, beatMin: 1.15, birdRadius: 11, scrollSpeed: 190 }),
   phases: Object.freeze([
     Object.freeze({
@@ -75,11 +74,16 @@ const ALMOR = Object.freeze({
     phase3Sequence: Object.freeze([2, 0, 1]),
     shape: "golden-ring", plane: "game" })
 });
+// Generic data registry: every boss supplies the same phase/attack/weak-point contract.
+// Boss-specific identity and visuals stay in descriptors, not in the simulation loop.
+const BOSSES = Object.freeze({ almor: Object.freeze({ id: "almor", name: "Ålmor", epithet: "Tidvattenväktaren",
+  worldId: "w1", bodyStyle: "segmented-lagoon-eel", data: ALMOR }) });
+function getBoss(id) { return BOSSES[String(id || "almor")] || null; }
 function rng(seed) {
   let s = Number(seed) >>> 0;
   return () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
 }
-function makeTimeline(phaseNo, seed, mercy) {
+function makeTimeline(phaseNo, seed) {
   const p = ALMOR.phases[Math.max(0, Math.min(2, (Number(phaseNo) || 1) - 1))];
   const rnd = rng((Number(seed) >>> 0) ^ (phaseNo * 0x9e3779b9));
   let base;
@@ -100,13 +104,11 @@ function makeTimeline(phaseNo, seed, mercy) {
         warning: p.warning, duration: a.duration, rect, shape: a.shape, symbol: a.symbol, lane };
     });
   }
-  const attacks = base.map((a, i) => Object.assign({}, a, {
-    warning: Number((a.warning * (mercy ? ALMOR.rules.mercyWarningMultiplier : 1)).toFixed(3)),
+  const attacks = base.map(a => Object.assign({}, a, {
+    warning: Number(a.warning.toFixed(3)),
     impactAt: Number((a.impactAt + (rnd() - 0.5) * 0.08).toFixed(3)),
-    duration: a.duration || 0.44,
-    // Every third scheduled attack is removed in mercy mode (index 3, 6, ...).
-    removedByMercy: !!(mercy && (i + 1) % ALMOR.rules.mercyRemoveEvery === 0)
-  })).filter(a => !a.removedByMercy);
+    duration: a.duration || 0.44
+  }));
   return attacks;
 }
 function makeWeakPoints(phaseNo) {
@@ -118,14 +120,12 @@ function makeWeakPoints(phaseNo) {
   }));
 }
 function checkpointAfterDeath(phase, deathsInPhase) {
-  const n = Math.max(0, Number(deathsInPhase) || 0);
-  const mercy = n >= ALMOR.rules.mercyAfterDeaths;
-  return { phase: Math.max(1, Math.min(3, Number(phase) || 1)), mercy,
-    warningMultiplier: mercy ? ALMOR.rules.mercyWarningMultiplier : 1,
-    removeEvery: mercy ? ALMOR.rules.mercyRemoveEvery : 0 };
+  return { phase: Math.max(1, Math.min(3, Number(phase) || 1)),
+    deathsInPhase: Math.max(0, Number(deathsInPhase) || 0), restart: true };
 }
-function worldTwoUnlocked(w1SignatureCleared, originalUnlockedLegacy) {
-  return !!w1SignatureCleared || Number(originalUnlockedLegacy || 1) >= 6;
+function worldTwoUnlocked(w1SignatureCleared, bossBeaten, originalUnlockedLegacy) {
+  // Preserve previously unlocked progression, but new saves require both the signature flight and boss victory.
+  return Number(originalUnlockedLegacy || 1) >= 6 || (!!w1SignatureCleared && !!bossBeaten);
 }
 function worldOneComplete(sixRegularFlightsCleared, bossBeaten) {
   return !!sixRegularFlightsCleared && !!bossBeaten;
@@ -163,7 +163,7 @@ function migrateLegacyProgress(rawKeys, migratedAt, bossSave) {
 }
 
 /* 7a (REVIEW_7 B1): validator for the boss script in its NATIVE format (kind + rect object). Called by boss.js
-   before every fight (normal and calm timelines). Combines DipwingSim.validateBossAttacks with plane/passage rules. */
+   before every fight. Combines DipwingSim.validateBossAttacks with plane/passage rules. */
 const PLANE = Object.freeze({ w: 480, ceil: 14, floor: 708, tideFloor: 600, minPassage: 66 }); // 66 px = 3 bird diameters
 function validateTimeline(attacks, Sim) {
   const errors = [];
@@ -198,6 +198,6 @@ function validateWeakPoints(phaseNo, attacks) {
   }
   return errors;
 }
-window.DipwingBossData = Object.freeze({ VERSION: "omg7-almor-data-6-7a", LEVELS: Object.freeze(LEVELS), WORLD_NAMES, WORLD_NAMES_SV, ALMOR,
+window.DipwingBossData = Object.freeze({ VERSION: "boss-data-registry-1", BOSSES, getBoss, LEVELS: Object.freeze(LEVELS), WORLD_NAMES, WORLD_NAMES_SV, ALMOR,
   makeTimeline, makeWeakPoints, validateTimeline, validateWeakPoints, PLANE, checkpointAfterDeath, worldTwoUnlocked, worldOneComplete, migrateLegacyProgress });
 })();

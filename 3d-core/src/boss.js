@@ -9,6 +9,10 @@ const Bridge = window.DipwingBossBridge;
 const Data = window.DipwingBossData;
 if (!Bridge || !Data || !window.DipwingSim) return;
 const Sim = window.DipwingSim;
+const BOSS_ID = "almor";
+const BOSS_DEF = Data.getBoss ? Data.getBoss(BOSS_ID) : null;
+const BossData = BOSS_DEF ? BOSS_DEF.data : Data.ALMOR;
+const Stars = window.DipwingStars || null;
 const STORE_KEY = "pfb_level_id_save_v1";
 const MIGRATION_KEY = "pfb_level_id_migration_v1";
 const BACKUP_KEY = "pfb_omg7_legacy_backup_v1";
@@ -74,7 +78,10 @@ function syncStableRecords() {
         medal: Math.max(Number(prev.medal) || 0, medal) };
     };
     idSave.records[id] = { classic: readMode("classic"), sky: readMode("sky") };
+    // Sync already-cleared flights to ★1 only. ★2/★3 must be earned in play, not by selecting a higher picker tier.
+    if (Stars && isLevelDone(id)) Stars.recordLevel("w1", id, 1);
   }
+  if (Stars) Stars.completeWorld("w1", Object.keys(Data.LEVELS).filter(id => Data.LEVELS[id].world === 1).slice(0, 6));
   idSave.unlockedLegacy = Math.max(Number(idSave.unlockedLegacy) || 1, Number(st.unlocked) || 1);
   safeSet(STORE_KEY, JSON.stringify(idSave));
   return idSave;
@@ -93,7 +100,7 @@ function isLevelDone(idOrLevel) {
 function worldUnlocked(world) {
   const w = Math.max(1, Number(world) || 1), unlocked = Number(Bridge.store.unlocked) || 1;
   if (w <= 1) return true;
-  if (w === 2) return Data.worldTwoUnlocked(isLevelDone("w1-l6"), idSave.originalUnlockedLegacy);
+  if (w === 2) return Data.worldTwoUnlocked(isLevelDone("w1-l6"), bossComplete(), idSave.originalUnlockedLegacy);
   const firstLegacy = (w - 1) * 5 + 1;
   return unlocked >= firstLegacy || Number(idSave.originalUnlockedLegacy || 1) >= firstLegacy;
 }
@@ -104,17 +111,23 @@ function isIDUnlocked(id) {
   return entry.legacyLevel != null && entry.legacyLevel <= unlocked && worldUnlocked(entry.world);
 }
 function w1NormalComplete() { for (let n = 1; n <= 6; n++) if (!isLevelDone(`w1-l${n}`)) return false; return true; }
-function bossComplete() { return !!readBossSave().beaten; }
+function bossComplete() {
+  const save = readBossSave();
+  // New victories are always normal-mode. Keep a previously recorded boss clear
+  // (including a historical Calm Mode clear) as an already-earned world unlock;
+  // removing Calm Mode must not revoke access a player already had.
+  return save.normalBeaten === true || save.beaten === true;
+}
 function worldOneComplete() { return Data.worldOneComplete(w1NormalComplete(), bossComplete()); }
 function safeLang() { try { return (window.I18N && I18N.lang) || document.documentElement.lang || "sv"; } catch (e) { return "sv"; } }
 const txt = (sv, en) => safeLang() === "en" ? en : sv;
 
 const Boss = {
   active: false, finished: false, won: false, phase: 1, phaseT: 0, acc: 0, breakT: 0,
-  sim: null, attacks: [], rings: [], deaths: [0, 0, 0], mercy: false, seed: 0,
+  sim: null, attacks: [], rings: [], deaths: [0, 0, 0], seed: 0,
   warningPlayed: new Set(), collected: [], secretSequenceIndex: 0, h2Hook: false,
   checkpointNotice: "", checkpointT: 0, exitButton: null, mapModal: null,
-  currentMapLevelId: null, lastRecordsSync: 0, startTime: 0,
+  currentMapLevelId: null, currentStarTier: 1, currentMapMode: "classic", lastRecordsSync: 0, startTime: 0,
   onLegacyStart(level) {
     const sig = Data.LEVELS["w1-l6"].gameLevel;
     // keep the signature context only for a (re)start of the signature flight itself (map launch, retry); Next after L40 is legacy L41
@@ -143,10 +156,12 @@ const Boss = {
     </div>`;
     el.addEventListener("click", e => {
       const close = e.target.closest("[data-dw-close]"); if (close) { this.closeMap(); return; }
+      const mode = e.target.closest("[data-dw-mode]"); if (mode) { this.currentMapMode = mode.getAttribute("data-dw-mode") === "sky" ? "sky" : "classic"; this.renderMap(); return; }
+      const star = e.target.closest("[data-dw-star]"); if (star && Stars) { const tier = Number(star.getAttribute("data-dw-star")); if (Stars.select("w1", tier)) { this.currentStarTier = tier; this.renderMap(); } return; }
       const level = e.target.closest("[data-dw-level]"); if (level) {
         const id = level.getAttribute("data-dw-level"), entry = Data.LEVELS[id];
         if (entry && isIDUnlocked(id)) {
-          this.closeMap(); Bridge.launchLegacy(entry.gameLevel, id); // sets currentMapLevelId = id before showReady
+          this.closeMap(); window.DipwingSelectedStar = this.currentStarTier || 1; Bridge.launchLegacy(entry.gameLevel, id, this.currentMapMode); // stable ID + Classic/Sky + selected ★ tier
         }
         return;
       }
@@ -178,7 +193,7 @@ const Boss = {
       #dipwingBplusMap{position:fixed;inset:0;z-index:120;display:flex;align-items:center;justify-content:center;padding:calc(12px + env(safe-area-inset-top)) 12px calc(12px + env(safe-area-inset-bottom));background:rgba(10,16,35,.84);backdrop-filter:blur(8px);font-family:Nunito,system-ui,sans-serif;color:#1a1433}
       #dipwingBplusMap[hidden]{display:none!important}.dw-map-card{width:min(660px,100%);max-height:100%;overflow:auto;background:linear-gradient(160deg,#fff8e9,#e8f6ed);border:3px solid #1a1433;border-radius:22px;padding:16px;box-shadow:0 10px 0 #1a1433,0 24px 60px #0008}
       .dw-map-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.dw-eyebrow{font-size:10px;letter-spacing:2px;font-weight:1000;color:#497a68}.dw-map-head h2{margin:2px 0 0;font-size:28px;line-height:1.05}.dw-close{width:46px;height:46px;border:2px solid #1a1433;border-radius:14px;background:#fff;font-size:28px;font-weight:900;color:#1a1433}
-      .dw-intro{font-size:13px;line-height:1.45;margin:10px 0 14px;color:#4d5b50}.dw-section-title{font-size:13px;font-weight:1000;letter-spacing:.5px;margin:10px 0 8px}.dw-route{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+      .dw-intro{font-size:13px;line-height:1.45;margin:10px 0 14px;color:#4d5b50}.dw-section-title{font-size:13px;font-weight:1000;letter-spacing:.5px;margin:10px 0 8px}.dw-route{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;position:relative}.dw-route .dw-node:nth-child(3n+2){transform:translateY(8px)}.dw-route .dw-node:nth-child(3n){transform:translateY(2px)}.dw-star-select{display:flex;gap:8px;margin:8px 0}.dw-mode-select{display:flex;gap:8px;margin:8px 0}.dw-mode-choice{min-height:44px;min-width:88px;border:2px solid #1a1433;border-radius:12px;background:#fff;color:#1a1433;font:900 13px Nunito,system-ui,sans-serif}.dw-mode-choice.selected{background:#cce9e1}.dw-star-choice{min-height:44px;min-width:64px;border:2px solid #1a1433;border-radius:12px;background:#fff;color:#1a1433;font:900 13px Nunito,system-ui,sans-serif}.dw-star-choice.selected{background:#f4d78b}.dw-star-choice:disabled{opacity:.4}
       .dw-node{min-height:62px;border:2px solid #1a1433;border-radius:14px;background:#fff;padding:7px 5px;color:#1a1433;font:900 12px/1.2 Nunito,system-ui,sans-serif;box-shadow:0 3px 0 #1a1433;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;cursor:pointer}
       .dw-node small{font-size:10px;font-weight:700;color:#63766a}.dw-node:disabled{opacity:.55;cursor:not-allowed;box-shadow:none}.dw-node.boss{background:linear-gradient(140deg,#d0f2ed,#fff1bf);min-height:74px}.dw-node.done{background:#d9f2d9}.dw-node.locked{background:#eee8de}
       .dw-route-line{text-align:center;color:#56816c;font-size:16px;font-weight:1000;margin:5px 0}.dw-boss-row{display:flex;align-items:center;gap:8px;margin-top:10px;padding:10px;border:2px dashed #498e84;border-radius:14px;background:#f4fffa}.dw-boss-copy{flex:1;min-width:0}.dw-boss-copy b{display:block;font-size:15px}.dw-boss-copy small{display:block;font-size:11px;line-height:1.35;color:#4c665d;margin-top:3px}.dw-boss-button{min-width:112px;min-height:48px;border:2px solid #1a1433;border-radius:12px;background:#1a706b;color:#fff;font:900 12px Nunito,system-ui,sans-serif;padding:8px}
@@ -215,9 +230,27 @@ const Boss = {
     syncStableRecords();
     const w1Complete = w1NormalComplete(), beaten = bossComplete(), complete = w1Complete && beaten;
     const intro = modal.querySelector("#dwMapIntro");
-    intro.textContent = txt("Klara de sex vanliga banorna för att öppna nästa värld. Ålmor är en separat slutnod – bossen blockerar aldrig W2.",
-      "Clear the six regular flights to open the next world. Ålmor is a separate final node — the boss never blocks W2.");
+    intro.textContent = txt("Klara banorna och besegra Ålmor för att öppna nästa värld. Redan upplåsta världar behålls.",
+      "Clear the flights and defeat Ålmor to unlock the next world. Previously unlocked worlds stay unlocked.");
     const track = modal.querySelector("#dwMapW1"); track.innerHTML = "";
+    if (Stars) {
+      const starRow = document.createElement("div"); starRow.className = "dw-star-select";
+      const state = Stars.get("w1"); this.currentStarTier = state.tier || 1;
+      for (let tier = 1; tier <= 3; tier++) {
+        const b = document.createElement("button"); b.type = "button"; b.className = "dw-star-choice" + (this.currentStarTier === tier ? " selected" : "");
+        b.textContent = "★" + tier; b.disabled = !Stars.canSelect("w1", tier);
+        b.setAttribute("data-dw-star", String(tier));
+        b.setAttribute("aria-pressed", this.currentStarTier === tier ? "true" : "false");
+        if (b.disabled) b.title = tier === 2 ? txt("Låst – klara världen på ★1 först", "Locked – clear the world on ★1 first") : txt("Låst – klara världen på ★2 först", "Locked – clear the world on ★2 first");
+        else b.title = txt("Stjärnnivå", "Star tier") + " " + tier;
+        b.addEventListener("click", () => { if (Stars.select("w1", tier)) { this.currentStarTier = tier; this.renderMap(); } });
+        starRow.appendChild(b);
+      }
+      track.appendChild(starRow);
+    }
+    const modeRow = document.createElement("div"); modeRow.className = "dw-mode-select";
+    for (const mode of ["classic", "sky"]) { const b = document.createElement("button"); b.type = "button"; b.className = "dw-mode-choice" + (this.currentMapMode === mode ? " selected" : ""); b.textContent = mode === "classic" ? txt("Klassisk", "Classic") : "Sky"; b.setAttribute("data-dw-mode", mode); b.setAttribute("aria-pressed", this.currentMapMode === mode ? "true" : "false"); modeRow.appendChild(b); }
+    track.appendChild(modeRow);
     const heading = document.createElement("div"); heading.className = "dw-section-title";
     heading.textContent = txt("W1 · GRÖNA DALEN", "W1 · GREEN VALLEY") + (complete ? "  👑" : ""); track.appendChild(heading);
     const route = document.createElement("div"); route.className = "dw-route";
@@ -276,9 +309,10 @@ const Boss = {
   validateAll(seed) {
     // 7a (REVIEW_7 B1): the runtime validates the boss script in its native data format before the fight starts.
     const errors = [];
-    for (let ph = 1; ph <= 3; ph++) for (const mercy of [false, true]) {
-      for (const e of Data.validateTimeline(Data.makeTimeline(ph, seed, mercy), Sim)) errors.push(`fas ${ph}${mercy ? " (lugnt)" : ""}: ${e}`);
-      for (const e of Data.validateWeakPoints(ph, Data.makeTimeline(ph, seed, mercy))) errors.push(`fas ${ph}${mercy ? " (lugnt)" : ""}: ${e}`);
+    for (let ph = 1; ph <= 3; ph++) {
+      const attacks = Data.makeTimeline(ph, seed);
+      for (const e of Data.validateTimeline(attacks, Sim)) errors.push(`fas ${ph}: ${e}`);
+      for (const e of Data.validateWeakPoints(ph, attacks)) errors.push(`fas ${ph}: ${e}`);
     }
     return errors;
   },
@@ -295,7 +329,7 @@ const Boss = {
       this.ensureModal().hidden = false;
       return false;
     }
-    this.phase = 1; this.deaths = [0, 0, 0]; this.mercy = false; this.finished = false; this.won = false;
+    this.phase = 1; this.deaths = [0, 0, 0]; this.finished = false; this.won = false;
     this.collected = []; this.secretSequenceIndex = 0; this.h2Hook = false;
     this.startPhase(false);
     this.active = true; window.DipwingBossActive = true;
@@ -310,12 +344,12 @@ const Boss = {
     this.acc = 0; this.phaseT = 0; this.breakT = 0;
     this.sim = Sim.createBossState((this.seed ^ (this.phase * 0x45d9f3b)) >>> 0, this.phase,
       { x: 480 * 0.32, y: 330, floorY: 708 });
-    this.attacks = Data.makeTimeline(this.phase, this.seed, this.mercy);
+    this.attacks = Data.makeTimeline(this.phase, this.seed);
     this.rings = Data.makeWeakPoints(this.phase);
     this.warningPlayed = new Set();
     this.checkpointNotice = checkpoint ? txt("Checkpoint: fas ", "Checkpoint: phase ") + this.phase : "";
     this.checkpointT = checkpoint ? 1.5 : 0;
-    this.phaseEnd = Math.max(Data.ALMOR.phases[this.phase - 1].duration,
+    this.phaseEnd = Math.max(BossData.phases[this.phase - 1].duration,
       ...this.attacks.map(a => a.impactAt + a.duration + 0.55));
     this.phaseEnd = Math.min(18, this.phaseEnd);
   },
@@ -362,7 +396,7 @@ const Boss = {
       this.collectWeakPoints(this.phaseT);
       this.syncBird();
       if (result.hit) { this.onDeath(); break; }
-      if (this.phaseT >= this.phaseEnd) { this.breakT = Data.ALMOR.rules.phaseBreak; try { AudioFX.play("bossHit"); } catch (e) {} break; }
+      if (this.phaseT >= this.phaseEnd) { this.breakT = BossData.rules.phaseBreak; try { AudioFX.play("bossHit"); } catch (e) {} break; }
     }
     window.DipwingBossView = this.makeView();
   },
@@ -381,7 +415,7 @@ const Boss = {
   collectWeakPoints(t) {
     for (const ring of this.rings) {
       if (ring.collected || ring.missed || t < ring.bornAt) continue;
-      const f = clamp((t - ring.bornAt) / Data.ALMOR.weakPoints.travelDuration, 0, 1);
+      const f = clamp((t - ring.bornAt) / BossData.weakPoints.travelDuration, 0, 1);
       const x = ring.x0 + (ring.x1 - ring.x0) * f;
       if (t > ring.expireAt) { ring.missed = true; continue; }
       const b = this.sim.bird, dx = b.x - x, dy = b.y - ring.y;
@@ -389,7 +423,7 @@ const Boss = {
         ring.collected = true; this.collected.push({ phase: this.phase, order: ring.order, at: t });
         try { AudioFX.play("bossHit"); } catch (e) {}
         if (this.phase === 3) {
-          const expected = Data.ALMOR.weakPoints.phase3Sequence;
+          const expected = BossData.weakPoints.phase3Sequence;
           if (ring.order === expected[this.secretSequenceIndex]) this.secretSequenceIndex++;
           else this.secretSequenceIndex = ring.order === expected[0] ? 1 : 0;
           if (this.secretSequenceIndex >= expected.length) this.h2Hook = true;
@@ -400,24 +434,26 @@ const Boss = {
   onDeath() {
     const idx = this.phase - 1; this.deaths[idx]++;
     try { AudioFX.play("bossHit"); } catch (e) {}
-    const checkpoint = Data.checkpointAfterDeath(this.phase, this.deaths[idx]);
-    this.mercy = checkpoint.mercy;
-    this.startPhase(true); // same phase checkpoint; no continue screen, no countdown
+    Data.checkpointAfterDeath(this.phase, this.deaths[idx]);
+    // Boss deaths restart the same phase immediately. There is no continue and no
+    // alternate difficulty path; every victory must be earned on the normal script.
+    this.startPhase(true);
     this.syncBird();
     window.DipwingBossView = this.makeView();
   },
   win() {
     this.finished = true; this.won = true; this.phase = 3;
-    const flawless = !this.mercy && this.deaths.every(n => n === 0);
+    const flawless = this.deaths.every(n => n === 0);
     const prev = readBossSave();
     const save = Object.assign({}, prev, {
       version: 1, beaten: true, trophy: true, museumItem: "almor-pearl-shell", pearlTrail: true,
       masterCrown: !!prev.masterCrown || flawless, flawless: !!prev.flawless || flawless,
-      h2SecretHook: !!prev.h2SecretHook || (!!this.h2Hook && !this.mercy),
-      attempts: (Number(prev.attempts) || 0) + 1, lastMercy: this.mercy,
+      h2SecretHook: !!prev.h2SecretHook || !!this.h2Hook,
+      attempts: (Number(prev.attempts) || 0) + 1, normalBeaten: true, lastMercy: false,
       lastDeaths: this.deaths.slice(), completedAt: new Date().toISOString()
     });
     writeBossSave(save);
+    if (Stars) { Stars.recordBoss("w1", 1); Stars.completeWorld("w1", Object.keys(Data.LEVELS).filter(id => Data.LEVELS[id].world === 1).slice(0, 6)); }
     idSave.boss = save; safeSet(STORE_KEY, JSON.stringify(idSave));
     try { AudioFX.setBossMode(false); AudioFX.play("bossDefeat"); } catch (e) {}
     this.checkpointNotice = txt("Ålmor är besegrad!", "Ålmor is defeated!"); this.checkpointT = 99;
@@ -430,7 +466,7 @@ const Boss = {
     }
     el.innerHTML = `<div class="dw-result-card" role="dialog" aria-modal="true"><div style="font-size:38px">🏆</div><h2>${txt("Tidvattenvän", "Friend of the Tide")}</h2>
       <p>${txt("Ålmor har lugnat sjön. En trofé och ett museiföremål har lagts till.", "Ålmor has calmed the lake. A trophy and museum item have been added.")}</p>
-      <p>${save.masterCrown ? txt("👑 Master Crown + pärlspår upplåst.", "👑 Master Crown + pearl trail unlocked.") : txt("Pärlspår upplåst. Master Crown kräver en seger utan nådshjälp eller dödsfall.", "Pearl trail unlocked. Master Crown requires a flawless win without mercy assistance.")}</p>
+      <p>${save.masterCrown ? txt("👑 Master Crown + pärlspår upplåst.", "👑 Master Crown + pearl trail unlocked.") : txt("Pärlspår upplåst. Master Crown kräver en seger utan dödsfall.", "Pearl trail unlocked. Master Crown requires a flawless win without deaths.")}</p>
       <p>${save.h2SecretHook ? txt("Ett särskilt ljusmönster har registrerats.", "A special light sequence has been recorded.") : txt("Museet har en anteckning om ett ännu olöst ljusmönster.", "The museum notes an unresolved light sequence.")}</p>
       <button type="button" id="dwResultMap">${txt("Till världskartan", "Back to world map")}</button><button type="button" id="dwResultRetry">${txt("Flyg Ålmor igen", "Fight Ålmor again")}</button></div>`;
     el.hidden = false;
@@ -463,9 +499,9 @@ const Boss = {
     const visible = this.attacks.filter(a => t >= a.impactAt - a.warning && t <= a.impactAt + a.duration)
       .map(a => ({ id: a.id, kind: a.kind, rect: a.rect, shape: a.shape, lane: a.lane,
         progress: clamp((t - (a.impactAt - a.warning)) / Math.max(0.001, a.warning), 0, 1),
-        depthDistance: Data.ALMOR.rules.scrollSpeed * a.warning, lethal: t >= a.impactAt }));
+        depthDistance: BossData.rules.scrollSpeed * a.warning, lethal: t >= a.impactAt }));
     return { active: this.active, phase: this.phase, t: reduced ? 0 : t, inhale,
-      phaseT: t, scrollSpeed: Data.ALMOR.rules.scrollSpeed, tide, hazards: visible, bodyStyle: "segmented-lagoon-eel" };
+      phaseT: t, scrollSpeed: BossData.rules.scrollSpeed, tide, hazards: visible, bossId: BOSS_ID, bodyStyle: BOSS_DEF ? BOSS_DEF.bodyStyle : "segmented-lagoon-eel" };
   },
   drawFallbackEel(ctx, t) {
     // Decorative 2D fallback only; the 3D build normally uses Render3D's depth group.
@@ -498,21 +534,17 @@ const Boss = {
     ctx.fillStyle = "#f5fff2"; ctx.font = "900 15px Nunito,system-ui,sans-serif";
     ctx.fillText("ÅLMOR · " + txt("TIDVATTENVÄKTAREN", "TIDEKEEPER"), 27, 40);
     ctx.font = "800 11px Nunito,system-ui,sans-serif"; ctx.fillStyle = "#b9e5d3";
-    ctx.fillText(txt("FAS", "PHASE") + " " + this.phase + "/3  ·  " + txt(Data.ALMOR.phases[this.phase - 1].title, Data.ALMOR.phases[this.phase - 1].titleEn), 27, 62);
+    ctx.fillText(txt("FAS", "PHASE") + " " + this.phase + "/3  ·  " + txt(BossData.phases[this.phase - 1].title, BossData.phases[this.phase - 1].titleEn), 27, 62);
     const phaseCollected = this.collected.filter(x => x.phase === this.phase).length;
     for (let i = 0; i < 3; i++) {
       ctx.beginPath(); ctx.arc(222 + i * 15, 55, 5, 0, Math.PI * 2);
       ctx.fillStyle = i < phaseCollected ? "#ffd76a" : "rgba(255,255,255,.22)"; ctx.fill();
       ctx.strokeStyle = "#fff2bd"; ctx.stroke();
     }
-    if (this.mercy) {
-      ctx.fillStyle = "#fff0c4"; roundRect(ctx, 276, 20, 110, 27, 9); ctx.fill();
-      ctx.fillStyle = "#653d24"; ctx.font = "900 10px Nunito,system-ui,sans-serif"; ctx.fillText(txt("NÅDHJÄLP", "MERCY MODE"), 287, 38);
-    }
     // Weak points stay on the gameplay plane; their gold ring is always distinct from hazard contours.
     for (const r of this.rings) {
       if (r.collected || r.missed || t < r.bornAt || t > r.expireAt) continue;
-      const f = clamp((t - r.bornAt) / Data.ALMOR.weakPoints.travelDuration, 0, 1);
+      const f = clamp((t - r.bornAt) / BossData.weakPoints.travelDuration, 0, 1);
       const x = r.x0 + (r.x1 - r.x0) * f, y = r.y;
       ctx.save(); ctx.translate(x, y); ctx.rotate(Math.PI / 4);
       ctx.strokeStyle = "#513a12"; ctx.lineWidth = 9; ctx.strokeRect(-12, -12, 24, 24);

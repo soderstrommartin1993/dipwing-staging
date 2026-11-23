@@ -43,6 +43,11 @@ const Sim3D = {
       bird: Object.freeze(Object.assign({}, v.bird, { rot: S.bird.rot, wing: S.bird.wing, flapAt: S.bird.flapAt, alive: S.bird.alive })),
       // presentation (inte hashat, ingen fysik)
       time: S.time, camY: S.camY, viewW: S.viewW || S.W, viewH: S.viewH, offX: S.offX || 0, worldKey: S.worldKey,
+      // Presentation-only feather pickups: copied values, never references into the live simulation.
+      particles: Object.freeze((S.particles || []).filter(p => p && (p.kind === "feather" || p.feather)).map(p => Object.freeze({
+        x: Number(p.x) || 0, y: Number(p.y) || 0, r: Number(p.r) || 3, t: Number(p.t) || 0,
+        life: Number(p.life) || 1, rot: Number(p.rot) || 0, col: String(p.col || "245,231,205")
+      }))),
       shake: S.shake, shakeT: S.shakeT
     });
   },

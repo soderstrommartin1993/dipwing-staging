@@ -333,6 +333,25 @@ function init(stage, opts) {
   R.bird = makeBird(window.IDENTITY ? IDENTITY.BIRD_PAL.tornis : ["#3B4CC0", "#232B7A", "#4F63E0", "#1C2266", "#FFF1DC", "#FF6B4A", "#FFB830"], "tornis");
   R.fg.add(R.bird.root);
   R.boss = makeBossScene(); R.fg.add(R.boss.group);
+  R.featherFx = new T.Group(); R.featherFx.name = "feather-pickup-fx"; R.fg.add(R.featherFx);
+  R.featherFxPool = [];
+  // THREE_R3D has no Shape/ShapeGeometry/MeshStandardMaterial/Line/LineBasicMaterial (vendored subset).
+  // Build the same quadratic silhouette with BufferGeometry + MeshBasicMaterial (Grok P1-0b fix).
+  R.featherGeo = (() => {
+    const q = (a, b, c, t) => { const u = 1 - t; return [u*u*a[0]+2*u*t*b[0]+t*t*c[0], u*u*a[1]+2*u*t*b[1]+t*t*c[1]]; };
+    const ring = [];
+    for (let i = 0; i <= 8; i++) ring.push(q([-1, 0], [-0.2, -0.62], [1, -0.08], i / 8));
+    for (let i = 1; i <= 8; i++) ring.push(q([1, -0.08], [0.22, 0.58], [-1, 0], i / 8));
+    const pos = [];
+    for (let i = 1; i < ring.length - 1; i++) pos.push(ring[0][0], ring[0][1], 0, ring[i][0], ring[i][1], 0, ring[i + 1][0], ring[i + 1][1], 0);
+    const g = new T.BufferGeometry(); g.setAttribute("position", new T.Float32BufferAttribute(pos, 3));
+    return g;
+  })();
+  R.featherStemGeo = (() => {
+    const w = 0.05, pos = [-0.92, w, 0.03, 0.94, w - 0.03, 0.03, 0.94, -w - 0.03, 0.03, -0.92, w, 0.03, 0.94, -w - 0.03, 0.03, -0.92, -w, 0.03];
+    const g = new T.BufferGeometry(); g.setAttribute("position", new T.Float32BufferAttribute(pos, 3));
+    return g;
+  })();
   R.shadow = new T.Mesh(GEO.cyl10, basic("#1A1433", { transparent: true, opacity: 0.2, depthWrite: false })); R.fg.add(R.shadow);
   R.ok = true;
   setQuality(R.quality);
@@ -748,8 +767,7 @@ function makeBossScene() {
   }
   return { group, eel, body, head, fins, slots };
 }
-function updateBossScene(view, reducedMotion) {
-  const B = R.boss; if (!B) return;
+function updateAlmorBossScene(view, reducedMotion, B) { if (!B) return;
   const active = !!(view && view.active);
   B.group.visible = active;
   if (!active) return;
@@ -807,12 +825,45 @@ function updateBossScene(view, reducedMotion) {
     if (slot.body.material && slot.body.material.opacity != null) slot.body.material.opacity = opacity;
   }
 }
+if (window.DipwingBossRenderRegistry) window.DipwingBossRenderRegistry.register("almor", updateAlmorBossScene);
+function updateBossScene(view, reducedMotion) {
+  const B = R.boss; if (!view || !B) { if (B) B.group.visible = false; return; }
+  B.group.visible = !!view.active;
+  if (!view.active) return;
+  if (window.DipwingBossRenderRegistry && window.DipwingBossRenderRegistry.render(view.bossId || "almor", view, reducedMotion, B)) return;
+  // Unknown boss IDs remain invisible rather than drawing the wrong creature.
+}
 
 /* ---------- frame ---------- */
 /* Visual Studio round 2 (studio/r2): every frame step goes through this table so an optional add-on
    (src/r3d-studio.js, window.R3D_STUDIO) can wrap or replace a step WITHOUT editing the functions above.
    Without the add-on the table holds exactly the original functions (behaviour unchanged). */
 const H = { buildWorld, setWorldPalette, updateWorld, updateGround, updateGates, updateBird, updateCameras, after: null };
+function updateFeatherFx(S) {
+  if (!R.featherFx) return;
+  const items = (S.particles || []).filter(p => p && (p.kind === "feather" || p.feather));
+  while (R.featherFxPool.length < items.length) {
+    const g = new T.Group();
+    const mat = new T.MeshBasicMaterial({ color: "#F5E7CD", side: T.DoubleSide, transparent: true, depthWrite: false });
+    const stemMat = new T.MeshBasicMaterial({ color: "#66717B", side: T.DoubleSide, transparent: true, depthWrite: false });
+    const m = new T.Mesh(R.featherGeo, mat); g.add(m);
+    const stem = new T.Mesh(R.featherStemGeo, stemMat); g.add(stem);
+    R.featherFx.add(g); R.featherFxPool.push(g);
+  }
+  for (let i = 0; i < R.featherFxPool.length; i++) {
+    const g = R.featherFxPool[i], p = items[i];
+    g.visible = !!p;
+    if (!p) continue;
+    const k = Math.max(0, Math.min(1, 1 - p.t / Math.max(0.001, p.life)));
+    const size = Math.max(3.2, p.r * 1.8);
+    g.position.set(p.x, -p.y, 5 + i * 0.001);
+    g.rotation.z = -(Number(p.rot) || 0);
+    g.scale.set(size, size * 0.56, 1);
+    g.children[0].material.color.set("rgb(" + String(p.col || "245,231,205") + ")");
+    g.children[0].material.opacity = k;
+    g.children[1].material.opacity = k * 0.9;
+  }
+}
 function frame(S, o) {
   if (!R.ok || R.lost) return false;
   const t0 = performance.now(); // statistics only (never game time)
@@ -825,6 +876,7 @@ function frame(S, o) {
   H.updateGround(S, palFor(R.worldKey));
   H.updateGates(S, o);
   H.updateBird(S, o);
+  updateFeatherFx(S);
   if (H.after) H.after(S, o);
   updateBossScene(window.DipwingBossView, o.rm);
   const gl = R.gl;

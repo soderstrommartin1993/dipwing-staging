@@ -307,11 +307,16 @@ const FLIGHT_BIRD = { // individual flight character per skin; species baselines
   glod: { hz: 11.4, beats: 3, lag: 0.15, feather: 0.12, bob: 0.95, pitch: 0.07 }, // species glide/fold values live in FLIGHT_BASE.glod
   frost: { hz: 4.4, beats: 2, lag: 0.2, feather: 0.08, bob: 0.42, glideOsc: 0.018, spread: 0.045 } // tern: slow, broad strokes and long glides
 };
+/* 6b (Martin t161u, "the wingbeat could be calmed down a bit"): one global calm factor on the visual flight timing for all
+   species. Wingbeat frequency −25 %, body bob/pitch and primary flutter −20 %. The approved stroke angles (Tornis 66°/−34°)
+   and beats per tap are unchanged, so a tap still enters the downstroke in the same frame. Never touches S or physics. */
+const FLIGHT_CALM = { hz: 0.75, body: 0.8 };
 const D2R = Math.PI / 180, TAU2 = Math.PI * 2;
 const sstep = x => { x = x < 0 ? 0 : x > 1 ? 1 : x; return x * x * (3 - 2 * x); };
 function flightParams(b, palId, rm) {
   const k = palId + "|" + b.plan + "|" + (rm ? 1 : 0); if (b._flk === k) return b._flp;
   const P = Object.assign({}, FLIGHT_DEFAULTS, FLIGHT_BASE[b.plan] || FLIGHT_BASE.tornisA, FLIGHT_BIRD[palId] || {});
+  P.hz *= FLIGHT_CALM.hz; P.bob *= FLIGHT_CALM.body; P.pitch *= FLIGHT_CALM.body; P.feather *= FLIGHT_CALM.body; // 6b: calmer wingbeat for every species (visual timing only)
   const sk = b.p.sickle, sweep = Math.atan2(b.p.span * (0.45 + 0.3 * sk), b.p.span) / D2R; // tip direction vs. span axis (sickle)
   const th = e => (90 - e - sweep) * D2R; // tip elevation → stroke angle (rotation in the wing plane, 0 = span axis up)
   if (rm) { const m = (P.top + P.bot) / 2, a = (P.top - P.bot) / 2 * 0.6; P.top = m + a; P.bot = m - a; P.hz *= 0.75; P.beats = 1; P.bob = 0; P.pitch = 0; P.feather = 0; P.glideOsc = 0; P.lag *= 0.6; }
@@ -758,8 +763,12 @@ function buildGV(R) {
   GV.moteP = new T.Points(mg, new T.PointsMaterial({ color: "#FFF6C8", size: 2.2, sizeAttenuation: false, transparent: true, opacity: 0.55, depthWrite: false, vertexColors: true })); GV.moteP.frustumCulled = false; G.add(GV.moteP);
   // perf: double-sided transparent materials would render in two passes (back+front) – one pass is visually identical for these flat cards
   G.traverse(n => { const m = n.material; if (m && m.side === T.DoubleSide) m.forceSinglePass = true; });
-  // B-13: all near/mid foreground instance groups are screened against the flight opening. Sky/weather layers stay exempt.
-  const gvGapExempt = new Set([GV.clouds, GV.shaftI, GV.flockI, GV.mistI]);
+  // B-13: near/mid foreground instance groups are screened against the flight opening. Sky/weather layers stay exempt.
+  // 6b (Martin t161u, "trees blur out and disappear"): the ridge trees (species crowns + trunks) are static background
+  // scenery behind the gameplay plane. Screening them shrank ~80 % of all trees every frame (the approach zones of the
+  // gates on screen cover most of the ridge band), so trees visibly shrank away and vanished. They are now exempt, the
+  // same as the world kits, which never screened their trees; fauna, ground cover, motes and set-pieces stay guarded.
+  const gvGapExempt = new Set([GV.clouds, GV.shaftI, GV.flockI, GV.mistI, GV.trunk, ...Object.values(GV.spec).map(s => s.mesh)]);
   GV.guardMeshes = []; G.traverse(n => { if (n.isInstancedMesh && !gvGapExempt.has(n)) GV.guardMeshes.push(n); });
   // Fixed waterfall components are not InstancedMesh; guard each component independently so the entire set-piece
   // does not disappear just because one small piece approaches an opening.

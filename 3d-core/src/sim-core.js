@@ -123,6 +123,82 @@ function hash(S) {
   function r2(v) { return Math.round(v * 100) / 100; }
 }
 
+/* ---------- boss-simulering (additivt API; anropas endast av 3D-bossläget) ----------
+   Bossens attackkolliders skickas in som data. Bosskroppen ingår aldrig här och kan därför aldrig kollidera.
+   Befintlig Classic/Sky/Endless/Overdrive/Daily/Hardcore-kod och hash lämnas orörda. */
+const BOSS_TUNING = Object.freeze({ gravity: DEFAULTS.gravity, flapVelocity: DEFAULTS.flapVelocity,
+  maxFallSpeed: DEFAULTS.maxFallSpeed });
+function createBossState(seed, phase, options) {
+  const o = options || {};
+  return {
+    seed: (Number(seed) >>> 0), phase: Math.max(1, Math.min(3, Number(phase) || 1)),
+    t: 0, steps: 0, bird: { x: Number.isFinite(o.x) ? o.x : 480 * DEFAULTS.birdXfrac,
+      y: Number.isFinite(o.y) ? o.y : 330, vy: 0, wing: 0 },
+    floorY: Number.isFinite(o.floorY) ? o.floorY : 708, hit: false, hitId: null, ended: false
+  };
+}
+function bossFlap(B) {
+  if (!B || !B.bird || B.ended) return false;
+  flap(B.bird, BOSS_TUNING); return true;
+}
+function bossStep(B, dt, hazards) {
+  if (!B || !B.bird || B.ended) return { hit: !!(B && B.hit), hitId: B && B.hitId, bird: B && B.bird };
+  const d = Math.max(0, Math.min(1 / 30, Number(dt) || 0));
+  if (!d) return { hit: false, hitId: null, bird: B.bird };
+  B.t += d; B.steps++;
+  integrateBird(B.bird, 0, d, BOSS_TUNING);
+  B.bird.wing += d * (B.bird.vy < 0 ? 22 : 12);
+  clampCeiling(B.bird);
+  const r = PHYS.BIRD_R;
+  if (B.bird.y + r >= B.floorY) { B.hit = true; B.hitId = "floor"; B.ended = true; }
+  const list = Array.isArray(hazards) ? hazards : [];
+  if (!B.hit) for (const h of list) {
+    if (!h || h.active === false) continue;
+    let hit = false;
+    if (h.kind === "circle") {
+      const dx = B.bird.x - Number(h.x), dy = B.bird.y - Number(h.y), rr = r + Math.max(0, Number(h.r) || 0);
+      hit = dx * dx + dy * dy <= rr * rr;
+    } else {
+      const x0 = Number(h.x0), x1 = Number(h.x1), y0 = Number(h.y0), y1 = Number(h.y1);
+      if ([x0, x1, y0, y1].every(Number.isFinite)) {
+        const nx = Math.max(x0, Math.min(B.bird.x, x1)), ny = Math.max(y0, Math.min(B.bird.y, y1));
+        const dx = B.bird.x - nx, dy = B.bird.y - ny;
+        hit = dx * dx + dy * dy <= r * r;
+      }
+    }
+    if (hit) { B.hit = true; B.hitId = String(h.id || "attack"); B.ended = true; break; }
+  }
+  return { hit: B.hit, hitId: B.hitId, bird: B.bird, t: B.t, steps: B.steps };
+}
+function bossHash(B, hazards) {
+  const r2 = v => Math.round(Number(v || 0) * 100) / 100;
+  const a = [B.seed >>> 0, B.phase, r2(B.t), B.steps, r2(B.bird.x), r2(B.bird.y), r2(B.bird.vy),
+    B.hit ? 1 : 0, B.hitId || "-"];
+  for (const h of (Array.isArray(hazards) ? hazards : [])) {
+    a.push([h.id || "-", h.kind || "rect", r2(h.x0), r2(h.x1), r2(h.y0), r2(h.y1), r2(h.x), r2(h.y), r2(h.r), h.active === false ? 0 : 1].join(","));
+  }
+  const s = a.join(";"); let v = 2166136261;
+  for (let i = 0; i < s.length; i++) { v ^= s.charCodeAt(i); v = Math.imul(v, 16777619); }
+  return (v >>> 0).toString(16) + ":" + s.length;
+}
+function validateBossAttacks(attacks) {
+  const errors = [];
+  if (!Array.isArray(attacks)) return ["attacks must be an array"];
+  const sorted = attacks.slice().sort((a, b) => Number(a.impactAt) - Number(b.impactAt));
+  let prev = -Infinity;
+  for (const a of sorted) {
+    const warn = Number(a.warning), impact = Number(a.impactAt);
+    if (!Number.isFinite(warn) || warn < 1) errors.push(String(a.id || "attack") + ": warning < 1.0s");
+    if (!Number.isFinite(impact)) errors.push(String(a.id || "attack") + ": invalid impactAt");
+    if (impact - prev < 1.15) errors.push(String(a.id || "attack") + ": beats < 1.15s apart");
+    prev = impact;
+    if (a.kind === "rect" && !(Number(a.x1) > Number(a.x0) && Number(a.y1) > Number(a.y0))) errors.push(String(a.id || "attack") + ": invalid rectangle");
+    if (a.kind === "full-height" || (a.kind === "rect" && Number(a.y0) <= PHYS.CEIL_Y + PHYS.BIRD_R && Number(a.y1) >= 690))
+      errors.push(String(a.id || "attack") + ": full-height attack rejected");
+  }
+  return errors;
+}
+
 /* ---------- läsvy för renderare (2D/3D). Kopia – en renderare kan aldrig skriva tillbaka. ---------- */
 function snapshot(S) {
   return {
@@ -139,6 +215,8 @@ window.DipwingSim = Object.freeze({
   PHYS, readTuning, makeAccumulator, accumulate, drain,
   flap, integrateBird, clampCeiling,
   rampSpeed, advanceObstacles, windAccel, maybeSpawn, isPassed, cullObstacles,
-  groundY, hitsGround, hitsObstacle, hash, snapshot
+  groundY, hitsGround, hitsObstacle, hash, snapshot,
+  // Isolerat boss-API: ingen befintlig sim-konsument använder dessa entry points.
+  BOSS_TUNING, createBossState, bossFlap, bossStep, bossHash, validateBossAttacks
 });
 })();

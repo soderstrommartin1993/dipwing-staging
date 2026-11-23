@@ -1172,6 +1172,7 @@ S.bird.x = S.W * TUNE.birdXfrac;
 function setLevel(n) {
   S.level = n;
   S.cfg = levelConfig(n);
+  if (n === 41 && window.DipwingBoss && window.DipwingBoss.currentMapLevelId === "w1-l6") S.cfg = Object.assign({}, levelConfig(6), { level: 41, world: "meadow" });
   S.worldKey = S.cfg.world;
   S.world = WORLDS[S.worldKey];
   S.best = store.bestFor(S.mode, n);
@@ -1342,6 +1343,7 @@ const TIPS = [
 ];
 
 function showReady(level, seedOverride) {
+  if (window.DipwingBoss && !window.DipwingBossActive) { window.DipwingBoss.onLegacyStart(level); if (!window.DipwingBoss.canLaunchLegacy(level)) { window.DipwingBoss.openMap(); return; } }
   setLevel(level);
   syncCrashMarksLevel(level);
   resetCrashMarkDistance(); // ny attempt: tidigare märken placeras om från banstart
@@ -1793,7 +1795,8 @@ function levelClear() {
   S.clearIsNewBest = !!isBest;
   store.setCleared(S.mode, S.level); // replay avklarar utan att röra unlock
   if (!S.runContinued) store.setMedal(S.mode, S.level, 1); // continued-runs hålls utanför rena medalj-/rekordlistor
-  if (store.unlocked < S.level + 1) store.unlocked = S.level + 1; // höj endast — sänk aldrig
+  if (S.level === 41 && window.DipwingBoss && window.DipwingBoss.currentMapLevelId === "w1-l6" && window.DipwingBoss.markSignatureCleared) window.DipwingBoss.markSignatureCleared(); /* 7a B13 */
+  if (!(S.level === 41 && window.DipwingBoss && window.DipwingBoss.currentMapLevelId === "w1-l6") && store.unlocked < S.level + 1) store.unlocked = S.level + 1; // höj endast — sänk aldrig
   /* Phase 1A: förstaclear-bonus (exakt en gång per läge+nivå) + run-summering. */
   S.clearPipesEarned = Econ.runEarned;
   S.clearBonus = Econ.awardFirstClear();
@@ -3043,6 +3046,7 @@ function flap() {
   puff(S.bird.x - 14, S.bird.y + 8, 4);
 }
 function onPress() {
+  if (window.DipwingBossActive && window.DipwingBoss) { window.DipwingBoss.flap(); return; }
   AudioFX.ensure();
   if (S.rotateBlocked) return; // A2: inget spel bakom rotationsspärren
   if (S.state === "ready") { startPlaying(); return; }
@@ -3059,6 +3063,7 @@ canvas.addEventListener("pointerdown", e => {
   onPress();
 }, { passive: false });
 window.addEventListener("keydown", e => {
+  if (window.DipwingBossActive && (e.code === "Escape" || e.code === "KeyP")) { e.preventDefault(); window.DipwingBoss.leave(); return; }
   if (e.code === "Space" || e.code === "ArrowUp" || e.code === "KeyW") {
     e.preventDefault();
     if (!e.repeat) onPress();
@@ -3301,6 +3306,7 @@ const PIPE_W = 78, CAP_H = 34, CAP_OV = 6;
    UPPDATERING
    ============================================================ */
 function update(dt) {
+  if (window.DipwingBossActive && window.DipwingBoss) { window.DipwingBoss.update(dt); return; }
   S.time += dt;
   if (S.envBlend < 1) S.envBlend = Math.min(1, S.envBlend + dt / 1.6); // mjuk världsövertoning
   if (S.flapLock > 0) S.flapLock -= dt;
@@ -3477,6 +3483,7 @@ function updateAmbient(dt) {
 const _zenith = { k: null, g: null };
 const _skyG = { k: null, g: null };
 function render() {
+  if (window.DipwingBossActive && R3D.active && r3dRender()) { window.DipwingBoss.renderOverlay(); return; }
   if (R3D.active && r3dRender()) return; // B-11: 3D render path (off by default; 2D below is unchanged)
   const w = S.W, h = S.H;
   // bälte-och-hängslen: fyll hela canvasen (ifall logisk H klippts)
@@ -3544,6 +3551,7 @@ function render() {
     ctx.fillRect(-offX - 2, S.camY - 2, offX + 2, S.viewH + 4);
     ctx.fillRect(w, S.camY - 2, offX + 2, S.viewH + 4);
   }
+  if (window.DipwingBossActive && window.DipwingBoss) window.DipwingBoss.renderOverlay();
 }
 /* A2: miljöns översta himmelsfärg (premiumscen via Worlds.skyTop, annars klassisk palett). */
 function skyTopColor() {
@@ -4945,4 +4953,13 @@ else document.addEventListener("DOMContentLoaded", boot);
 if (!window.__dipwing) window.__dipwing = Object.freeze({ prod: true, version: window.GAME_VERSION,
   verifyReceipt: rc => { try { return Daily.verify(rc); } catch (e) { return { ok: false, why: "error" }; } } });
 
+
+/* Round 7 bridge: present only in the unpublished 3D build. */
+window.DipwingBossBridge = Object.freeze({
+  get S(){return S;}, get store(){return store;}, get SIMC(){return SIMC;}, get ctx(){return ctx;}, get canvas(){return canvas;},
+  reducedMotion(){return reducedMotion();}, targetForLevel(n){try{return levelConfig(n===41?6:n).target;}catch(e){return 10;}},
+  launchLegacy(level,id){const n=Math.max(1,Math.floor(Number(level)||1)); if(window.DipwingBoss) window.DipwingBoss.currentMapLevelId=id||null; S.selectedLevel=n; S.levelFilterWorld=id==="w1-l6"?"meadow":Progress.worldDefForLevel(n).id; refreshMenu(); showReady(n);},
+  beginBoss(){setLevel(1); S.runMode="boss"; S.hardcore=true; S.continueReady=false; S.continueUsed=false; S.runContinued=false; S.overdrive=false; S.state="playing"; S.pipes=[]; S.particles=[]; S.popups=[]; S.score=0; S.ptime=0; S.time=0; S.camX=0; S.shake=0; S.shakeT=0; S.bird.x=S.W*0.32; S.bird.y=330; S.bird.vy=0; S.bird.rot=0; S.bird.wing=0; S.bird.alive=true; hideAll(); hud.hidden=true; tutorial.hidden=true; AudioFX.ensure(); AudioFX.setBossMode(true);},
+  endBoss(){AudioFX.setBossMode(false); S.runMode="adventure"; S.hardcore=false; S.continueReady=false; S.continueUsed=false; S.runContinued=false; S.state="menu"; showMenu();}
+});
 })();

@@ -269,6 +269,7 @@ function birdHullMat() { return basic(INK, { side: T.BackSide, name: "birdHull" 
 /* DESIGN_SYSTEM §4.4 wing cycle (render-only): angle in rad (+ = up) from the time since the last flap and vy */
 const WING_KEYS = [[0, 0.55], [45, -0.15], [90, -0.95], [150, -0.35], [220, 0.35], [320, 0.18]];
 function wingCycle(sinceMs, vy, t, rm) {
+  if (sinceMs != null) sinceMs *= 0.75; // 6b: same calm factor as R3D_STUDIO FLIGHT_CALM.hz (fallback bird, visual only)
   if (vy > 300) return { a: -0.2, sweep: 0.9 * Math.min(1, (vy - 300) / 300) };
   if (sinceMs == null || sinceMs >= 320) return { a: 0.18 + (rm ? 0 : Math.sin(t * 0.35 * Math.PI * 2) * 0.04), sweep: 0 };
   for (let i = 0; i < WING_KEYS.length - 1; i++) {
@@ -294,7 +295,7 @@ function equip(bird, slot, key, build) {
 const R = {
   VERSION, K, KX, ok: false, lost: false, quality: "high", canvas: null, gl: null,
   fg: null, bg: null, fgCam: null, bgCam: null, view: { viewW: 480, viewH: 800, offX: 0, camY: 0 },
-  gates: [], gateMap: new WeakMap(), bird: null, ground: null, world: null, worldKey: null,
+  gates: [], gateMap: new WeakMap(), bird: null, ground: null, world: null, worldKey: null, boss: null,
   stats: { frames: 0, cpuMs: [] }, debug: { lastBounds: null }
 };
 
@@ -331,6 +332,7 @@ function init(stage, opts) {
   buildGround();
   R.bird = makeBird(window.IDENTITY ? IDENTITY.BIRD_PAL.tornis : ["#3B4CC0", "#232B7A", "#4F63E0", "#1C2266", "#FFF1DC", "#FF6B4A", "#FFB830"], "tornis");
   R.fg.add(R.bird.root);
+  R.boss = makeBossScene(); R.fg.add(R.boss.group);
   R.shadow = new T.Mesh(GEO.cyl10, basic("#1A1433", { transparent: true, opacity: 0.2, depthWrite: false })); R.fg.add(R.shadow);
   R.ok = true;
   setQuality(R.quality);
@@ -702,6 +704,110 @@ function updateCameras(S, o) {
   bc.updateProjectionMatrix(); bc.updateMatrixWorld();
 }
 
+/* ---------- Round 7: Ålmor depth-only boss visuals (never part of collision/simulation) ---------- */
+function makeBossScene() {
+  const group = new T.Group(); group.visible = false;
+  const eel = new T.Group(); group.add(eel);
+  const body = [];
+  for (let i = 0; i < 19; i++) {
+    const f = i / 18, radius = 15.5 * (1 - f * 0.72);
+    const m = new T.Mesh(GEO.sph, toon(i < 12 ? (i % 3 ? "#4faaa0" : "#397f82") : "#73c8b0"));
+    m.scale.set(radius * 1.12, radius * 0.76, radius * 0.82); eel.add(m); body.push(m);
+  }
+  const head = new T.Group(); eel.add(head);
+  const skull = new T.Mesh(GEO.sph, toon("#72cbb5")); skull.scale.set(27, 20, 16); head.add(skull);
+  const snout = new T.Mesh(GEO.sph, toon("#a5e5ce")); snout.position.set(18, -3, 1); snout.scale.set(15, 10, 13); head.add(snout);
+  const eyeMat = basic("#123b43"); const eyeGlow = basic("#f6fff0");
+  for (const side of [-1, 1]) {
+    const eye = new T.Mesh(GEO.sph, eyeGlow); eye.position.set(5, 6, side * 13); eye.scale.set(4.8, 5.4, 3.2); head.add(eye);
+    const pupil = new T.Mesh(GEO.sph, eyeMat); pupil.position.set(7, 6, side * 15.2); pupil.scale.set(2, 3.2, 1.3); head.add(pupil);
+    const gill = new T.Mesh(GEO.sph, lam("#d0f6d9")); gill.position.set(-10, -3, side * 12); gill.scale.set(2.2, 8, 1.2); head.add(gill);
+  }
+  const crest = new T.Mesh(GEO.cone5, toon("#f1c982")); crest.position.set(-4, 20, 0); crest.rotation.z = -0.35; crest.scale.set(7, 13, 5); head.add(crest);
+  const fins = [];
+  for (let i = 0; i < 3; i++) {
+    const fin = new T.Mesh(GEO.cone4, toon(i === 1 ? "#f2c981" : "#78c8ad"));
+    fin.position.set(-17 - i * 10, 7 + i * 2, 0); fin.rotation.z = Math.PI / 2; fin.scale.set(7 - i, 14 - i * 2, 3); eel.add(fin); fins.push(fin);
+  }
+  const hazards = new T.Group(); group.add(hazards);
+  const slots = [];
+  for (let i = 0; i < 8; i++) {
+    const g = new T.Group(); hazards.add(g);
+    const mat = lam("#65d9e8", { transparent: true, opacity: 0.68, depthWrite: false });
+    const edge = basic("#d7fbff", { transparent: true, opacity: 0.8, depthWrite: false });
+    const bodyMesh = new T.Mesh(GEO.box, mat); g.add(bodyMesh);
+    const accent = new T.Mesh(GEO.box, edge); g.add(accent);
+    const fish = new T.Group(); g.add(fish);
+    const fishBody = new T.Mesh(GEO.sph, lam("#f0d895", { transparent: true, opacity: 0.9, depthWrite: false }));
+    fishBody.scale.set(38, 15, 8); fish.add(fishBody);
+    const tail = new T.Mesh(GEO.cone4, lam("#ffe6a3", { transparent: true, opacity: 0.9, depthWrite: false }));
+    tail.position.set(-43, 0, 0); tail.rotation.z = Math.PI / 2; tail.scale.set(13, 17, 4); fish.add(tail);
+    const tide = new T.Mesh(new T.PlaneGeometry(1, 1), basic("#59cfe6", { transparent: true, opacity: 0.36, depthWrite: false, side: T.DoubleSide }));
+    g.add(tide);
+    slots.push({ group: g, body: bodyMesh, accent, fish, tide });
+  }
+  return { group, eel, body, head, fins, slots };
+}
+function updateBossScene(view, reducedMotion) {
+  const B = R.boss; if (!B) return;
+  const active = !!(view && view.active);
+  B.group.visible = active;
+  if (!active) return;
+  const t = reducedMotion ? 0 : Number(view.t) || 0;
+  const inhale = reducedMotion ? 0 : Math.max(0, Math.min(1, Number(view.inhale) || 0));
+  // 7a: oblique compensation uses the WORLD z (as gates do, x' = x + KX·z); the earlier 1000 + z put every boss mesh
+  // ≈120 px left and ≈140 px too high. Ålmor now lives in the lake by the waterfall at the right edge (BOSS_DESIGN_R2 §2:
+  // S-loops at the right edge, rising and sinking with the tide), head facing the bird.
+  const z = -220, dx = KX * z, dy = K * z;
+  const tideLift = view.tide ? -22 : 0;
+  for (let i = 0; i < B.body.length; i++) {
+    const f = i / (B.body.length - 1), gx = 330 + f * 150;
+    const gy = 392 + tideLift + Math.sin(f * 7.1 + t * 0.86) * (16 + f * 18) + Math.sin(f * 12 - t * 0.42) * 6;
+    const m = B.body[i]; m.position.set(gx - dx, -gy + dy, z); m.rotation.z = Math.cos(f * 7.1 + t * 0.86) * 0.18;
+  }
+  const hx = 312 + inhale * 10, hy = 380 + tideLift + Math.sin(t * 0.86) * 9; // inhale: the head draws back before each tell
+  B.head.position.set(hx - dx, -hy + dy, z + 1); B.head.rotation.set(0, Math.PI, reducedMotion ? 0 : Math.sin(t * 0.7) * 0.08); // turned: snout and eyes face the bird
+  B.head.scale.setScalar(1 + inhale * 0.075);
+  B.fins.forEach((f, i) => { f.rotation.z = Math.PI / 2 + (reducedMotion ? 0 : Math.sin(t * 1.4 + i) * 0.13); });
+  B.eel.position.set(0, 0, 0);
+  const visible = (view.hazards || []).slice(0, B.slots.length);
+  for (let i = 0; i < B.slots.length; i++) {
+    const slot = B.slots[i], h = visible[i];
+    slot.group.visible = !!h;
+    if (!h) continue;
+    const r = h.rect || {}, x0 = Number(r.x0) || 0, x1 = Number(r.x1) || 0, y0 = Number(r.y0) || 0, y1 = Number(r.y1) || 0;
+    const progress = Math.max(0, Math.min(1, Number(h.progress) || 0));
+    const depthDistance = Math.max(0, Number(h.depthDistance) || 190);
+    // 7a: compensate with the world z (hz) so the 3D tell sits exactly on its warning contour, and let the
+    // animation follow the warning: pillars and tide rise out of the water, the sweep extends from Ålmor's side,
+    // the fish swims in from the right – each reaching its full lethal shape exactly at impact (progress 1).
+    const hz = -depthDistance * (1 - progress);
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, w = Math.max(8, x1 - x0), hh = Math.max(8, y1 - y0);
+    const grow = 0.12 + 0.88 * progress;
+    const isFish = h.kind === "fish", isTide = h.kind === "tide", isSweep = h.kind === "sweep";
+    let px = cx, py = cy;
+    const fromTop = h.lane === "cascade" || h.lane === "deep" || h.lane === "dive"; // 7a: attacks from above
+    if (h.kind === "pillar" || isTide) py = fromTop ? y0 + hh * grow / 2 : y1 - hh * grow / 2; // anchored at the water line (or the top), grows toward the lane
+    if (isSweep) px = x1 - w * grow / 2;                         // extends leftward from Ålmor's side
+    if (isFish) { px = cx + 140 * (1 - progress); py = fromTop ? y1 - 37 - 60 * (1 - progress) : y0 + 37 + 60 * (1 - progress); } // leaps (or dives) in from the right to the arc tip
+    slot.group.position.set(px - KX * hz, -py + K * hz, hz);
+    slot.body.visible = !isFish && !isTide;
+    slot.accent.visible = !isFish && !isTide;
+    slot.fish.visible = isFish;
+    slot.tide.visible = isTide;
+    if (isFish) { slot.fish.scale.setScalar(0.8 + progress * 0.2); }
+    else if (isTide) { slot.tide.scale.set(w, hh * grow, 1); slot.tide.position.set(0, 0, -1); }
+    else {
+      const sw = isSweep ? w * grow : w, sh = isSweep ? hh : hh * grow;
+      slot.body.scale.set(sw, sh, isSweep ? 24 : 18);
+      slot.accent.scale.set(isSweep ? sw * 0.96 : Math.max(4, w * 0.16), Math.max(3, sh * 0.045), 20);
+      slot.accent.position.set(0, isSweep ? 0 : (fromTop ? -(sh / 2 - 2) : sh / 2 - 2), 10); // crest marks the exact lethal edge
+    }
+    const opacity = 0.25 + progress * 0.48;
+    if (slot.body.material && slot.body.material.opacity != null) slot.body.material.opacity = opacity;
+  }
+}
+
 /* ---------- frame ---------- */
 /* Visual Studio round 2 (studio/r2): every frame step goes through this table so an optional add-on
    (src/r3d-studio.js, window.R3D_STUDIO) can wrap or replace a step WITHOUT editing the functions above.
@@ -720,6 +826,7 @@ function frame(S, o) {
   H.updateGates(S, o);
   H.updateBird(S, o);
   if (H.after) H.after(S, o);
+  updateBossScene(window.DipwingBossView, o.rm);
   const gl = R.gl;
   gl.clear();
   gl.render(R.bg, R.bgCam);
